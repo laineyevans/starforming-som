@@ -1,0 +1,5 @@
+# ignore everything at the top level...
+/*
+# ...except top-level python scripts and the gitignore itself
+!/*.py
+!/.gitignore
