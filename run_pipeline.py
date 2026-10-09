@@ -3,6 +3,7 @@ import preprocessing
 import autoencoder
 import som_module
 import gsom_module
+import soumap_module
 import plotting
 import cluster_diagnostics
 import data_visualisation
@@ -500,19 +501,20 @@ def main():
     config.plot_per_neuron_examples = True
     config.plot_top_populated_neuron_samples = True
     config.plot_fov_matched_originals = False
-    config.plot_processed_per_neuron_examples = True
-    config.plot_neuron_image_map = True
-    config.plot_smoothed_per_neuron_examples = True
-    config.plot_molecular_per_neuron_examples = True
-    config.plot_autoencoder_recons = True
-    config.plot_representative_originals = True
-    config.plot_representative_processed = True
-    config.plot_representative_smoothed = True
-    config.plot_representative_molecular = True
-    config.plot_representative_raw_moment0 = True
-    config.plot_evolutionary_stage = True
+    config.plot_processed_per_neuron_examples = False
+    config.plot_neuron_image_map = False
+    config.plot_smoothed_per_neuron_examples = False
+    config.plot_molecular_per_neuron_examples = False
+    config.plot_autoencoder_recons = False
+    config.plot_representative_originals = False
+    config.plot_representative_processed = False
+    config.plot_representative_smoothed = False
+    config.plot_representative_molecular = False
+    config.plot_representative_raw_moment0 = False
+    config.plot_evolutionary_stage = False
     config.evo_neuron_to_plot = 0
     config.plot_gsom_growth_animation = True   # GIF of topology + hit proportions as nodes are added
+    config.soumap_label_prototypes = False
 
 
     # preprocessing (not needed anymore)
@@ -538,18 +540,18 @@ def main():
     config.save_autoencoder_results = False
 
     # SOM
-    config.n_num = 6
-    config.m_num = 6
-    config.rough_epochs_num = 200000
-    config.fine_epochs_num = 200000
+    config.n_num = 15
+    config.m_num = 15
+    config.rough_epochs_num = 20000
+    config.fine_epochs_num = 20000
     config.rough_learning_rate = 0.2
     config.fine_learning_rate = 0.05
     config.rough_sigma = 2.5
     config.fine_sigma = 1.0
     config.train_in_blocks_flag = True
 
-    # SOM toggle: "som" (fixed grid) or "gsom" (growing)
-    config.som_type = "gsom"
+    # SOM toggle: "som" (fixed grid) or "gsom" (growing) or "soumap" (UMAP+SOM)
+    config.som_type = "soumap"
 
     # GSOM 
     config.gsom_spread_factor = 0.6
@@ -560,6 +562,37 @@ def main():
     config.gsom_min_hits_to_grow = 5 # require repeat BMU hits before a node can grow
     config.gsom_min_active_neighbours_to_grow = 3  # blocks one-neighbour chain growth (long tails)
     config.gsom_init_grid_size = 5       # initial seed grid: int -> NxN square, or (rows, cols) tuple
+
+    # SOUMAP (source defaults from soumap's parameter dataclasses)
+    config.soumap_prototypes = None
+    config.soumap_random_state = None
+    config.soumap_som_rho_0 = 2.0
+    config.soumap_som_rho_f = 1.0
+    config.soumap_som_nbr_topo_alpha_0 = 0.5
+    config.soumap_som_nbr_topo_alpha_f = 0.5
+    config.soumap_som_coord_topo = "delaunay"
+    config.soumap_som_proto_topo = "CONN"
+    config.soumap_som_compute_dr_metrics = False
+    config.soumap_umap_update_freq = 5
+    config.soumap_umap_n_epochs = 100
+    config.soumap_umap_min_dist_0 = 0.01
+    config.soumap_umap_min_dist_f = 0.01
+    config.soumap_umap_spread_0 = 2.0
+    config.soumap_umap_spread_f = 2.0
+    config.soumap_umap_lrate_0 = 1.0
+    config.soumap_umap_lrate_f = 0.1
+    config.soumap_umap_negative_sample_rate = 5
+    config.soumap_umap_gamma = 1.0
+    config.soumap_umap_use_standard_umap = False
+    config.soumap_ctrl_total_epochs = 100
+    config.soumap_ctrl_min_nhbs = 3
+    config.soumap_ctrl_fill_val = 0.5
+    config.soumap_ctrl_coord_init = "pca"
+    config.soumap_ctrl_embedding_range = (-3.0, 3.0)
+    config.soumap_ctrl_n_jobs = None
+    config.soumap_ctrl_random_state = None
+    config.soumap_ctrl_verbose = True
+    config.soumap_ctrl_plot_every = 0
 
     # paths
     config.data_dir = "/raid/scratch/mevans/newdata"
@@ -902,7 +935,7 @@ def main():
                 else:
                     print(f"Classification file {class_file} not found; skipping GSOM evolutionary stage plot.")
 
-        else:
+        elif config.som_type == "som":
             # ---- Classic fixed-grid SOM ----
             som, preds, qe_r, qe_f, hits = som_module.train_som(encoded_data, labels, config)
 
@@ -978,6 +1011,65 @@ def main():
                     )
                 else:
                     print(f"Classification file {class_file} not found; skipping evolutionary stage plot.")
+
+        elif config.som_type == "soumap":
+            # SOUMAP consumes the same encoded_data matrix as SOM and GSOM.
+            M = getattr(config, "soumap_prototypes", None)
+            M = int(M if M is not None else config.n_num * config.m_num)
+            print(f"SOUMAP selected: using M={M} prototypes.")
+            soumap_result = soumap_module.train_soumap(encoded_data, labels, config)
+            preds = soumap_result["bmu"]
+            sil_proxy, sil_samples = cluster_diagnostics.run_cluster_diagnostics(
+                encoded_data, preds, soumap_result["distances"], config
+            )
+            soumap_module.write_outputs(
+                soumap_result, filenames, labels, sil_samples, config
+            )
+            if config.plot_per_neuron_examples:
+                plotting.plot_original_examples(
+                    None, preds, filenames, labels, sil_samples, config
+                )
+            if getattr(config, "plot_top_populated_neuron_samples", True):
+                plotting.plot_top_populated_neuron_samples(
+                    preds, raw_datas, filenames, labels, sil_samples, config,
+                    mode_tag="soumap", top_k=min(5, soumap_result["M"]), n_show=9,
+                )
+            if config.plot_processed_per_neuron_examples:
+                plotting.plot_processed_examples(
+                    None, preds, raw_datas, labels, sil_samples, config
+                )
+            if config.plot_smoothed_per_neuron_examples and config.include_smoothed_channel:
+                plotting.plot_smoothed_examples(
+                    None, preds, filenames, labels, sil_samples, config
+                )
+            if config.plot_molecular_per_neuron_examples and config.include_molecular_line_channels:
+                plotting.plot_molecular_examples(
+                    None, preds, filenames, labels, sil_samples, config
+                )
+            if config.plot_representative_originals:
+                plotting.plot_representative_grid_originals(
+                    preds, filenames, labels, sil_samples, config
+                )
+            if config.plot_representative_processed:
+                plotting.plot_representative_grid_processed(
+                    preds, raw_datas, labels, sil_samples, config
+                )
+            if config.plot_representative_smoothed and config.include_smoothed_channel:
+                plotting.plot_representative_grid_smoothed(
+                    preds, filenames, labels, sil_samples, config
+                )
+            if config.plot_representative_molecular and config.include_molecular_line_channels:
+                plotting.plot_representative_grid_molecular(
+                    preds, filenames, labels, sil_samples, config
+                )
+            print("SOUMAP skipped lattice-only plots: U-matrix, rectangular hits map, "
+                  "neuron image map, and GSOM growth animation.")
+            print("SOUMAP neighbour overlap is not computed; only direct assignments are available.")
+
+        else:
+            raise ValueError(
+                f"Unknown som_type={config.som_type!r}; expected 'som', 'gsom', or 'soumap'."
+            )
 
 
     data_visualisation.umap_test(encoded_data, preds, config)

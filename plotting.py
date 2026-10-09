@@ -5,6 +5,10 @@ import os
 import torch
 import re
 import glob
+from plot_coordinates import (
+    configure_fixed_som_axes,
+    fixed_som_subplot_index,
+)
 
 AUGMENTATION_TAGS = ["[hflip]", "[vflip]", "[hvflip]", "[rot]"]
 SIM_FRAME_RE = re.compile(
@@ -17,10 +21,12 @@ def _ensure_plot_subdir(config, *parts):
     os.makedirs(out_dir, exist_ok=True)
     return out_dir
 
+
 def plot_autoencoder_qe(ae_re, config):
     """
     Plot autoencoder reconstruction error (mean reconstruction error per epoch).
     """
+    os.makedirs(config.run_dir, exist_ok=True)
     plt.figure()
     plt.plot(ae_re, marker='o')
     plt.xlabel("Epoch")
@@ -92,8 +98,9 @@ def plot_u_matrix(som, config):
     U = som.u_matrix()
 
     plt.figure(figsize=(6, 6))
-    plt.imshow(U, cmap="viridis", origin="upper")
+    plt.imshow(U, cmap="viridis_r", origin="lower")
     plt.colorbar(label="Neighbour distance")
+    configure_fixed_som_axes(plt.gca(), som.n, som.m)
 
     out = os.path.join(config.run_dir, "u_matrix.png")
     plt.tight_layout()
@@ -123,17 +130,15 @@ def plot_hits_map(som, encoded_data, config, labels=None, preds=None, exclude_au
 
     fig, ax = plt.subplots(figsize=(6, 6))
 
-    # Use origin='upper' so row 0 appears at the top-left, matching neuron_id -> row mapping
     im = ax.imshow(
         hits,
         cmap="plasma",
-        origin="upper",
+        origin="lower",
         extent=(-0.5, config.m_num - 0.5,
                 -0.5, config.n_num - 0.5)
     )
 
-    ax.set_xticks(np.arange(config.m_num))
-    ax.set_yticks(np.arange(config.n_num))
+    configure_fixed_som_axes(ax, config.m_num, config.n_num)
 
     ax.set_xlabel("Neuron x-dimension")
     ax.set_ylabel("Neuron y-dimension")
@@ -1188,9 +1193,12 @@ def _make_grid_canvas(config):
 
 
 def _grid_iter_axes(axes, config):
-    for i in range(config.n_num):
-        for j in range(config.m_num):
-            yield i, j, axes[i, j], i * config.m_num + j
+    for y in range(config.n_num):
+        for x in range(config.m_num):
+            row, column = fixed_som_subplot_index(
+                x, y, config.m_num, config.n_num
+            )
+            yield x, y, axes[row, column], y * config.m_num + x
 
 
 def plot_representative_grid_processed(som_results, raw_datas, labels, sil_scores, config):
@@ -1532,7 +1540,7 @@ def _plot_gsom_evolutionary_stage(clusters, gsom, config, neuron_to_plot=None):
                 )
 
     ax.set_xlim(x_min - 0.8, x_max + 0.8)
-    ax.set_ylim(y_max + 0.8, y_min - 0.8)
+    ax.set_ylim(y_min - 0.8, y_max + 0.8)
     ax.set_aspect("equal")
     ax.set_xlabel("Node x", fontsize=14)
     ax.set_ylabel("Node y", fontsize=14)
@@ -1866,9 +1874,6 @@ def plot_gsom_hits_map(gsom, encoded_data, config, labels=None):
     ax.set_aspect("equal")
     ax.grid(True, linewidth=0.3, alpha=0.4)
 
-    # Put y increasing upward so the initial square appears as (0,0)-(1,1)
-    ax.invert_yaxis()
-
     # Axis padding so edge nodes are not clipped
     if plot_coords:
         x_plot = np.array([c[0] for c in plot_coords], dtype=float)
@@ -1876,7 +1881,7 @@ def plot_gsom_hits_map(gsom, encoded_data, config, labels=None):
         x_min, x_max = float(np.min(x_plot)), float(np.max(x_plot))
         y_min, y_max = float(np.min(y_plot)), float(np.max(y_plot))
     ax.set_xlim(x_min - 0.8, x_max + 0.8)
-    ax.set_ylim(y_max + 0.8, y_min - 0.8)
+    ax.set_ylim(y_min - 0.8, y_max + 0.8)
 
     ax.legend(loc="best", fontsize=8)
 
@@ -2014,7 +2019,7 @@ def _gsom_image_grid(gsom, best, load_image_fn, title, out_path, thumb_px=64,
         ax.add_artist(ab)
 
     ax.set_xlim(x_min - 0.8, x_max + 0.8)
-    ax.set_ylim(y_max + 0.8, y_min - 0.8)  # invert y
+    ax.set_ylim(y_min - 0.8, y_max + 0.8)
     ax.set_aspect("equal")
     ax.set_xlabel("Node x", fontsize=8)
     ax.set_ylabel("Node y", fontsize=8)
@@ -2247,7 +2252,6 @@ def animate_gsom_growth(gsom, encoded_data, config, labels=None):
         ax.clear()
         ax.set_xlim(x_lim)
         ax.set_ylim(y_lim)
-        ax.invert_yaxis()
         ax.set_aspect("equal")
         ax.axis("off")
         # topology edges

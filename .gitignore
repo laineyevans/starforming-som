@@ -3,3 +3,6 @@
 # ...except top-level python scripts and the gitignore itself
 !/*.py
 !/.gitignore
+!/requirements-soumap.txt
+!/tests/
+!/tests/*.py
