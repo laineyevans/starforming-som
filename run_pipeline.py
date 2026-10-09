@@ -507,14 +507,30 @@ def main():
     config.plot_molecular_per_neuron_examples = False
     config.plot_autoencoder_recons = False
     config.plot_representative_originals = False
-    config.plot_representative_processed = False
+    config.plot_representative_processed = True
     config.plot_representative_smoothed = False
-    config.plot_representative_molecular = False
+    config.plot_representative_molecular = True
     config.plot_representative_raw_moment0 = False
     config.plot_evolutionary_stage = False
     config.evo_neuron_to_plot = 0
     config.plot_gsom_growth_animation = True   # GIF of topology + hit proportions as nodes are added
     config.soumap_label_prototypes = False
+    config.mpec_enabled = True
+    config.mpec_walktrap_n_steps = "auto"
+    config.mpec_kernel_w_cadj = 1.0
+    config.mpec_kernel_w_high_d = 1.0
+    config.mpec_kernel_w_low_d = 1.0
+    config.mpec_kernel_power = 2.0
+    config.mpec_kernel_min_value = 0.01
+    config.mpec_kernel_min_nhbs = 3
+    config.mpec_kernel_support = "dense"
+    config.mpec_walktrap_max_steps = 15
+    config.mpec_remove_empty_protos = True
+    config.mpec_verbose = True
+    config.mpec_plot_which = "all"
+    config.mpec_plot_format = "png"
+    config.mpec_show_graph = False
+    config.mpec_output_dir = None
 
 
     # preprocessing (not needed anymore)
@@ -542,8 +558,8 @@ def main():
     # SOM
     config.n_num = 15
     config.m_num = 15
-    config.rough_epochs_num = 20000
-    config.fine_epochs_num = 20000
+    config.rough_epochs_num = 200000
+    config.fine_epochs_num = 2000000
     config.rough_learning_rate = 0.2
     config.fine_learning_rate = 0.05
     config.rough_sigma = 2.5
@@ -564,7 +580,7 @@ def main():
     config.gsom_init_grid_size = 5       # initial seed grid: int -> NxN square, or (rows, cols) tuple
 
     # SOUMAP (source defaults from soumap's parameter dataclasses)
-    config.soumap_prototypes = None
+    config.soumap_prototypes = 63
     config.soumap_random_state = None
     config.soumap_som_rho_0 = 2.0
     config.soumap_som_rho_f = 1.0
@@ -1065,6 +1081,8 @@ def main():
             print("SOUMAP skipped lattice-only plots: U-matrix, rectangular hits map, "
                   "neuron image map, and GSOM growth animation.")
             print("SOUMAP neighbour overlap is not computed; only direct assignments are available.")
+            if getattr(config, "mpec_enabled", False):
+                soumap_module.run_mpec(soumap_result, config)
 
         else:
             raise ValueError(

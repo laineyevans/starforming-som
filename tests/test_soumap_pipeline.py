@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+import os
 
 import csv
 import numpy as np
@@ -74,3 +75,28 @@ def test_soumap_prototype_marker_sizes_are_bounded():
     assert np.all((sizes >= 30.0) & (sizes <= 600.0))
     assert sizes[0] == 30.0 + 570.0 / 500.0
     assert sizes[1] == 600.0
+
+
+def test_mpec_round_trip_and_diagnostics(tmp_path):
+    X = np.random.default_rng(8).normal(size=(60, 8)).astype(np.float32)
+    labels = [f"source_{i}_cont_.fits" for i in range(len(X))]
+    config = _config(tmp_path)
+    config.mpec_output_dir = str(tmp_path / "mpec_plots")
+    config.mpec_plot_which = "all"
+    config.mpec_plot_format = "png"
+    config.mpec_verbose = False
+    result = soumap_module.train_soumap(X, labels, config)
+
+    mpec = soumap_module.run_mpec(result, config)
+    assert mpec.labels_.shape == (4,)
+    assert np.sum(mpec.labels_ == -1) == np.sum(np.asarray(result["cadj"]).sum(axis=1) == 0)
+    assert mpec.n_steps_ >= 1
+    assert os.path.isfile(tmp_path / "mpec.h5")
+    loaded = mpec.__class__.load(str(tmp_path / "mpec.h5"))
+    np.testing.assert_array_equal(loaded.labels_, mpec.labels_)
+    for name in (
+        "step_tradeoff", "edge_distributions", "modularity",
+        "cluster_sizes", "embedding", "view_agreement",
+    ):
+        path = tmp_path / "mpec_plots" / f"mpec_{name}.png"
+        assert path.is_file() and path.stat().st_size > 0

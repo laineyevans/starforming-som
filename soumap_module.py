@@ -14,6 +14,7 @@ from dataclasses import asdict
 from importlib import metadata
 
 import numpy as np
+import scipy.sparse as sp
 
 
 SOURCE_COLUMNS = [
@@ -131,6 +132,57 @@ def train_soumap(encoded_data, labels, config):
         "distances": distances, "bmu": bmu, "sample_coords": sample_coords,
         "qe": qe, "cadj": cadj,
     }
+
+
+def run_mpec(result, config):
+    """Fit optional MPEC clustering on a fitted SOUMAP result."""
+    import matplotlib
+
+    matplotlib.use("Agg", force=True)
+    from soumap import MPEClustering
+
+    mpec = MPEClustering(
+        walktrap_n_steps=getattr(config, "mpec_walktrap_n_steps", "auto"),
+        kernel_w_cadj=getattr(config, "mpec_kernel_w_cadj", 1.0),
+        kernel_w_high_d=getattr(config, "mpec_kernel_w_high_d", 1.0),
+        kernel_w_low_d=getattr(config, "mpec_kernel_w_low_d", 1.0),
+        kernel_power=getattr(config, "mpec_kernel_power", 2.0),
+        kernel_min_value=getattr(config, "mpec_kernel_min_value", 0.01),
+        kernel_min_nhbs=getattr(config, "mpec_kernel_min_nhbs", 3),
+        kernel_support=getattr(config, "mpec_kernel_support", "dense"),
+        walktrap_max_steps=getattr(config, "mpec_walktrap_max_steps", 15),
+        remove_empty_protos=getattr(config, "mpec_remove_empty_protos", True),
+        verbose=getattr(config, "mpec_verbose", True),
+    )
+    W = np.asarray(result["W"])
+    Y = np.asarray(result["coords"])
+    CADJ = sp.csr_matrix(result["cadj"])
+    mpec.fit(W, Y, CADJ)
+
+    output_dir = getattr(config, "mpec_output_dir", None) or os.path.join(
+        config.run_dir, "mpec_plots"
+    )
+    os.makedirs(output_dir, exist_ok=True)
+    mpec.save(os.path.join(config.run_dir, "mpec.h5"))
+    np.save(os.path.join(config.run_dir, "mpec_labels.npy"), mpec.labels_)
+    np.save(os.path.join(config.run_dir, "mpec_active_indices.npy"), mpec.active_indices_)
+
+    which = getattr(config, "mpec_plot_which", "all")
+    if isinstance(which, str) and which != "all":
+        which = [name.strip() for name in which.split(",") if name.strip()]
+    mpec.plot_diagnostics(
+        embed_coords=Y,
+        which=which,
+        save_dir=output_dir,
+        save_format=getattr(config, "mpec_plot_format", "png"),
+        figsize=(6, 5),
+        show_graph=getattr(config, "mpec_show_graph", False),
+    )
+    print(
+        f"MPEC complete: {len(mpec.active_labels_)} active prototypes, "
+        f"{np.sum(mpec.labels_ < 0)} empty, n_steps={mpec.n_steps_}."
+    )
+    return mpec
 
 
 def _source_id(path):
