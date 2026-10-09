@@ -5,6 +5,7 @@ import som_module
 import gsom_module
 import plotting
 import cluster_diagnostics
+import data_visualisation
 import save_results
 import os
 import datetime
@@ -548,7 +549,7 @@ def main():
     config.train_in_blocks_flag = True
 
     # SOM toggle: "som" (fixed grid) or "gsom" (growing)
-    config.som_type = "som"
+    config.som_type = "gsom"
 
     # GSOM 
     config.gsom_spread_factor = 0.6
@@ -979,7 +980,9 @@ def main():
                     print(f"Classification file {class_file} not found; skipping evolutionary stage plot.")
 
 
-
+    data_visualisation.umap_test(encoded_data, preds, config)
+    data_visualisation.tSNE(encoded_data, preds, config)
+        
 
 
 

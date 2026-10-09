@@ -6,7 +6,7 @@ from scipy.optimize import curve_fit
 from astropy.io import fits
 from multiprocessing import Pool, cpu_count
 
-outdir = "/raid/scratch/mevans/moment0_with_rms2"
+outdir = "/raid/scratch/mevans/moment0_maps_with_rms"
 os.makedirs(outdir, exist_ok=True)
 
 VERBOSE = False
@@ -227,10 +227,10 @@ def process_line(name, nu0_line, v_lsr, cube0, x, y, avg_spectrum, image_id, out
     arr = np.array(cube0.spectral_axis)
     _, ind = find_nearest(arr, nu)
 
-    sub_cube = cube0[(ind - 100):(ind + 200), :, :]
+    sub_cube = cube0[(ind - 150):(ind + 150), :, :]
 
     spec = sub_cube[:, x, y]
-    avg_flux = avg_spectrum[(ind - 100):(ind + 200)]
+    avg_flux = avg_spectrum[(ind - 150):(ind + 150)]
 
     freq = spec.spectral_axis.value
 

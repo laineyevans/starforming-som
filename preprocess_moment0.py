@@ -31,8 +31,8 @@ CONTINUUM_PREPROC_DIR = "/raid/scratch/mevans/Preprocessed_Datas/continuumprepro
 CONTINUUM_DIR   = "/raid/scratch/mevans/newdata"
 ID_INFO_TABLE   = "/raid/scratch/mevans/imageproperties.dat"
 
-OUT_ISLAND      = "/raid/scratch/mevans/Preprocessed_Datas/moment_zero_preprocessed/island3"
-OUT_NOISLAND    = "/raid/scratch/mevans/Preprocessed_Datas/moment_zero_preprocessed/noisland3"
+OUT_ISLAND      = "/raid/scratch/mevans/Preprocessed_Datas/moment_zero_preprocessed/island_segmented"
+OUT_NOISLAND    = "/raid/scratch/mevans/Preprocessed_Datas/moment_zero_preprocessed/noisland_segmented"
 
 SQRT_PIXEL_NUMBER     = 304   # output image side length (pixels)
 NOISE_MULTIPLIER      = 1     # sigma multiplier for noise threshold
