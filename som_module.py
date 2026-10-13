@@ -28,6 +28,12 @@ class SOM:
         self._n_iter_ = None
         self._trained = False
         self.qe_history = []
+        self.phase_start_iter = 0
+        self.phase_iters = None
+        self.lr_start = lr
+        self.lr_end = lr
+        self.sigma_start = sigma
+        self.sigma_end = sigma
 
 
     # Core SOM operations
@@ -65,6 +71,19 @@ class SOM:
     def get_weights(self):
         return self.weights.reshape(self.m, self.n, self.dim)
 
+    def _apply_schedule(self):
+        phase_iters = max(1, self.phase_iters or 1)
+        frac = np.clip(
+            (self._n_iter_ - self.phase_start_iter) / float(phase_iters),
+            0.0,
+            1.0,
+        )
+        self.lr = self.lr_start + (self.lr_end - self.lr_start) * frac
+        self.sigma = max(
+            1e-6,
+            self.sigma_start + (self.sigma_end - self.sigma_start) * frac,
+        )
+
     # Quantization
     def quantization_error(self, X):
         if X is None or len(X) == 0:
@@ -87,16 +106,11 @@ class SOM:
             idx = np.random.randint(n)
             self.step(X[idx])
             self._n_iter_ += 1
-            self.lr = max(
-                0.0,
-                (1.0 - (self._n_iter_ / float(self.max_iter))) * self.initial_lr,
-            )
-            self.sigma = max(1e-6,
-            self.sigma * (1.0 - self._n_iter_ / self.max_iter)
-            )
+            self._apply_schedule()
 
 
     def train_batch(self, X, num_iterations):
+        """Train sequentially online in dataset order; this is not a batch SOM update."""
         n = X.shape[0]
         if n == 0:
             return
@@ -107,10 +121,7 @@ class SOM:
             idx = self._n_iter_ % n
             self.step(X[idx])
             self._n_iter_ += 1
-            self.lr = max(
-                0.0,
-                (1.0 - (self._n_iter_ / float(self.max_iter))) * self.initial_lr,
-            )
+            self._apply_schedule()
 
     def train_in_blocks(self, X, total_iters, block_size, method="random"):
         qe_history = []
@@ -118,7 +129,7 @@ class SOM:
         if n == 0:
             return qe_history
 
-        blocks = max(1, total_iters // block_size)
+        blocks = total_iters // block_size
         remainder = total_iters % block_size
 
         if self._n_iter_ is None:
@@ -156,11 +167,19 @@ class SOM:
         if n == 0:
             return
 
-        self._n_iter_ = 0
-        total_iters = min(epochs * n, self.max_iter)
+        if self._n_iter_ is None:
+            self._n_iter_ = 0
+        if self.phase_iters is None:
+            self.phase_start_iter = self._n_iter_
+            self.phase_iters = epochs * n
+            self.lr_start = self.lr
+            self.lr_end = 0.0
+            self.sigma_start = self.sigma
+            self.sigma_end = 1e-6
+        phase_end = self.phase_start_iter + self.phase_iters
 
         for epoch in range(epochs):
-            if self._n_iter_ >= self.max_iter:
+            if self._n_iter_ >= phase_end:
                 break
 
             if shuffle:
@@ -170,12 +189,12 @@ class SOM:
                 indices = np.arange(n)
 
             for idx in indices:
-                if self._n_iter_ >= self.max_iter:
+                if self._n_iter_ >= phase_end:
                     break
 
                 self.step(X[idx])
                 self._n_iter_ += 1
-                self.lr = (1 - (self._n_iter_ / total_iters)) * self.initial_lr
+                self._apply_schedule()
 
         self._inertia_ = np.sum([self._compute_point_inertia(x) for x in X])
         self._trained = True
@@ -274,40 +293,51 @@ def train_som(encoded_data, labels, config):
     )
 
 
+    fine_lr_end = getattr(config, "fine_lr_end", 0.005)
+    fine_sigma_end = getattr(config, "fine_sigma_end", 0.5)
+
     # Rough stage
-    som.initial_lr = config.rough_learning_rate
-    som.lr = config.rough_learning_rate
-    som.sigma = config.rough_sigma
+    som.phase_start_iter = 0 if som._n_iter_ is None else som._n_iter_
+    som.phase_iters = config.rough_epochs_num
+    som.lr_start = config.rough_learning_rate
+    som.lr_end = config.fine_learning_rate
+    som.sigma_start = config.rough_sigma
+    som.sigma_end = config.fine_sigma
+    som.lr = som.lr_start
+    som.sigma = som.sigma_start
 
     if config.train_in_blocks_flag:
         qe_rough = som.train_in_blocks(
             encoded_data,
             total_iters=config.rough_epochs_num,
-            block_size=200,
+            block_size=getattr(config, "som_block_size", 1000),
             method="random",
         )
     else:
         epochs = math.ceil(config.rough_epochs_num / len(encoded_data))
-        som.max_iter = config.rough_epochs_num
         som.fit(encoded_data, epochs=epochs)
         qe_rough = [som.quantization_error(encoded_data)]
 
 
     # Fine stage
-    som.initial_lr = config.fine_learning_rate
-    som.lr = config.fine_learning_rate
-    som.sigma = config.fine_sigma
+    som.phase_start_iter = som._n_iter_
+    som.phase_iters = config.fine_epochs_num
+    som.lr_start = config.fine_learning_rate
+    som.lr_end = fine_lr_end
+    som.sigma_start = config.fine_sigma
+    som.sigma_end = fine_sigma_end
+    som.lr = som.lr_start
+    som.sigma = som.sigma_start
 
     if config.train_in_blocks_flag:
         qe_fine = som.train_in_blocks(
             encoded_data,
             total_iters=config.fine_epochs_num,
-            block_size=200,
-            method="batch",
+            block_size=getattr(config, "som_block_size", 1000),
+            method=getattr(config, "som_fine_method", "random"),
         )
     else:
         epochs = math.ceil(config.fine_epochs_num / len(encoded_data))
-        som.max_iter = config.fine_epochs_num
         som.fit(encoded_data, epochs=epochs)
         qe_fine = [som.quantization_error(encoded_data)]
 

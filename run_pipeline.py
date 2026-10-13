@@ -7,6 +7,7 @@ import soumap_module
 import plotting
 import cluster_diagnostics
 import data_visualisation
+import embedding_diagnostics
 import save_results
 import os
 import datetime
@@ -17,6 +18,7 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler
 from scipy import ndimage
 import glob
+import traceback
 
 
 def save_run_info(config, save_dir):
@@ -495,6 +497,9 @@ def main():
     config.use_simulated_data = False  # if True, ignore real data paths and load simulated FITS from config.simulated_fits_dir
     config.run_autoencoder = True
     config.perform_som_training = True
+    config.run_embedding_diagnostics = True
+    config.diag_max_points = 6000
+    config.diag_seed_stability = False
     
     # plotting flags
     config.plot_quantization_error = False
@@ -556,17 +561,23 @@ def main():
     config.save_autoencoder_results = False
 
     # SOM toggle: "som" (fixed grid) or "gsom" (growing) or "soumap" (UMAP+SOM)
-    config.som_type = "soumap"
+    config.som_type = "som"
 
     # SOM
     config.n_num = 6
     config.m_num = 6
-    config.rough_epochs_num = 200000
-    config.fine_epochs_num = 200000
+    # config.rough_epochs_num = 200000
+    config.rough_epochs_num = 40000
+    # config.fine_epochs_num = 200000
+    config.fine_epochs_num = 80000
     config.rough_learning_rate = 0.2
     config.fine_learning_rate = 0.05
     config.rough_sigma = 2.5
     config.fine_sigma = 1.0
+    config.fine_lr_end = 0.005
+    config.fine_sigma_end = 0.5
+    config.som_fine_method = "random"
+    config.som_block_size = 1000
     config.train_in_blocks_flag = True
 
     # GSOM 
@@ -934,6 +945,21 @@ def main():
                     config=config,
                 )
 
+            if getattr(config, "run_embedding_diagnostics", False):
+                try:
+                    fov_by_filename = {
+                        meta["filename"]: meta["orig_fov"]
+                        for meta in (fov_info or {}).get("meta", [])
+                        if "filename" in meta and "orig_fov" in meta
+                    }
+                    embedding_diagnostics.run_embedding_diagnostics(
+                        encoded_data, preds, labels, filenames, raw_datas,
+                        sil_samples, config, som=None,
+                        fov_by_filename=fov_by_filename,
+                    )
+                except Exception:
+                    traceback.print_exc()
+
             if getattr(config, "plot_evolutionary_stage", False):
                 class_file = getattr(
                     config,
@@ -1012,6 +1038,21 @@ def main():
             if config.cluster_info_saving:
                 save_results.save_all_results(filenames, preds, sil_proxy, sil_samples, config)
 
+            if getattr(config, "run_embedding_diagnostics", False):
+                try:
+                    fov_by_filename = {
+                        meta["filename"]: meta["orig_fov"]
+                        for meta in (fov_info or {}).get("meta", [])
+                        if "filename" in meta and "orig_fov" in meta
+                    }
+                    embedding_diagnostics.run_embedding_diagnostics(
+                        encoded_data, preds, labels, filenames, raw_datas,
+                        sil_samples, config, som=som,
+                        fov_by_filename=fov_by_filename,
+                    )
+                except Exception:
+                    traceback.print_exc()
+
             if getattr(config, "plot_evolutionary_stage", False):
                 class_file = getattr(
                     config,
@@ -1073,10 +1114,6 @@ def main():
             raise ValueError(
                 f"Unknown som_type={config.som_type!r}; expected 'som', 'gsom', or 'soumap'."
             )
-
-
-    data_visualisation.umap_test(encoded_data, preds, config)
-    data_visualisation.tSNE(encoded_data, preds, config)
         
 
 
