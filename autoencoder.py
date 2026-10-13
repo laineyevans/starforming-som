@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
 import numpy as np
@@ -18,6 +19,9 @@ class ConvAE(nn.Module):
         self.input_h = input_h
         self.input_w = input_w
         self.in_channels = in_channels
+        self.latent_channels = 32
+        self.latent_h = 8
+        self.latent_w = 8
 
         # Encoder (stride=2 downsamples)
         self.encoder = nn.Sequential(
@@ -29,18 +33,12 @@ class ConvAE(nn.Module):
             nn.ReLU(),
             nn.Conv2d(12, 16, 3, stride=2, padding=1),
             nn.ReLU(),
-            nn.Conv2d(16, 16, 3, stride=2, padding=1),
+            nn.Conv2d(16, self.latent_channels, 3, stride=2, padding=1),
             nn.ReLU(),
+            nn.AdaptiveAvgPool2d((self.latent_h, self.latent_w)),
         )
 
-        # Work out encoded spatial size
-        with torch.no_grad():
-            dummy = torch.zeros(1, in_channels, input_h, input_w)
-            z = self.encoder(dummy)
-            self.enc_h = z.shape[2]
-            self.enc_w = z.shape[3]
-
-        flat_dim = 16 * self.enc_h * self.enc_w
+        flat_dim = self.latent_channels * self.latent_h * self.latent_w
 
         if self.use_bottleneck:
             self.fc_enc = nn.Linear(flat_dim, bottleneck_dim)
@@ -48,7 +46,7 @@ class ConvAE(nn.Module):
 
         # Decoder
         self.decoder = nn.Sequential(
-            nn.ConvTranspose2d(16, 16, 4, stride=2, padding=1),
+            nn.ConvTranspose2d(self.latent_channels, 16, 4, stride=2, padding=1),
             nn.ReLU(),
             nn.ConvTranspose2d(16, 12, 4, stride=2, padding=1),
             nn.ReLU(),
@@ -69,13 +67,13 @@ class ConvAE(nn.Module):
     def decode(self, z):
         if self.use_bottleneck:
             z = self.fc_dec(z)
-        z = z.view(z.size(0), 16, self.enc_h, self.enc_w)
+        z = z.view(z.size(0), self.latent_channels, self.latent_h, self.latent_w)
         return self.decoder(z)
 
     def forward(self, x):
         recon = self.decode(self.encode(x))
         _, _, H, W = x.shape
-        return recon[:, :, :H, :W]
+        return F.interpolate(recon, size=(H, W), mode="bilinear", align_corners=False)
 
     
 

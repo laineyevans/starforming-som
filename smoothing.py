@@ -6,7 +6,6 @@ except Exception:
     reproject_interp = None
     reproject_exact = None
 import numpy as np
-import matplotlib.pyplot as plt
 from astropy.wcs import WCS
 import os
 import re
@@ -129,30 +128,6 @@ def process_pair(file_tm2tm1, file_tm2, savedir_base):
             data_min = np.nanmin(data)
             data_max = np.nanmax(data)
             return (data - data_min) / (data_max - data_min) if data_max > data_min else data
-
-        data_norm = normalize(data_tm2tm1_og)
-        smooth_data_norm = normalize(smooth_data)
-        data_tm2_norm = normalize(data_tm2)
-
-        fig, axes = plt.subplots(1, 3, figsize=(20, 6))
-
-        # Original data
-        im1 = axes[0].imshow(data_norm, origin='lower', cmap='plasma', vmin=0, vmax=1)
-        axes[0].set_title("Original TM1TM2 (Normalized)")
-        plt.colorbar(im1, ax=axes[0])
-
-        # Smoothed data
-        im2 = axes[1].imshow(smooth_data_norm, origin='lower', cmap='plasma', vmin=0, vmax=1)
-        axes[1].set_title("Smoothed TM1TM2 (Normalized)")
-        plt.colorbar(im2, ax=axes[1])
-
-        # Reprojected TM2
-        im3 = axes[2].imshow(data_tm2_norm, origin='lower', cmap='plasma', vmin=0, vmax=1)
-        axes[2].set_title("Original TM2 (Normalized)")
-        plt.colorbar(im3, ax=axes[2])
-
-        plt.tight_layout()
-        plt.savefig(os.path.join(savedir_base, f"{source}_smoothing_comparison.png"), dpi=150)
 
         # Noise propagation: for beam-convolved radio images (Jy/beam), pixels
         # within one beam are correlated, so the per-pixel formula (sum of

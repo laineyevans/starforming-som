@@ -18,7 +18,6 @@ import math
 from typing import Iterator
 from skimage.morphology import closing
 from skimage.measure import label
-from scipy.stats import chisquare
 import re
 from sklearn.metrics import silhouette_samples
 import pandas as pd
@@ -572,16 +571,11 @@ with open(classification_result_save, "w") as f:
         clust_size = tally.sum()
         exp = np.array([expected_prop[c] * clust_size for c in classes])
         obs = tally
-        chi2_stat, p_value = chisquare(f_obs=obs, f_exp=exp)
         counts_str = " ".join(f"{letter}:{int(tally[idx])}" for idx, letter in enumerate(classes))
-        #print(f"cluster {x}: {counts_str}")
-        #print("Expected:", np.round(exp, 2))
-        #print(f"Chi-square: {chi2_stat:.3f}, p-value: {p_value:.4f}")
         out = (
             f"cluster {x}: {counts_str}\n"
-            f"Expected: {np.round(exp, 2)}\n"
-            f"Chi-square: {chi2_stat:.3f}, p-value: {p_value:.4f}\n\n")
-        f.write(out) # also write to file
+            f"Expected: {np.round(exp, 2)}\n\n")
+        f.write(out)
 
 # ------------------------------------------------------------------
 # Compute per-node class proportions
@@ -686,123 +680,6 @@ def make_cluster_tally(noc, clusters):
         combined_tally.append(tally)
     tally_dict = dict(zip(cluster_list, combined_tally))
     return tally_dict, noc_options
-
-def core_bar_chart(results, category_names):
-    labels = list(results.keys())
-    data = np.array(list(results.values()))
-    data_cum = data.cumsum(axis=1)
-    category_colors = plt.colormaps['Spectral'](
-        np.linspace(0.15, 0.85, data.shape[1])
-    )
-
-    fig, ax = plt.subplots(figsize=(9.2, 6))
-    ax.invert_yaxis()
-    ax.xaxis.set_visible(True)
-    ax.set_xlabel("Number of images")   # optional label
-    ax.set_xlim(0, np.sum(data, axis=1).max())
-
-
-    for i, (colname, color) in enumerate(zip(category_names, category_colors)):
-        widths = data[:, i]
-        starts = data_cum[:, i] - widths
-        ax.barh(labels, widths, left=starts, height=0.5, label=colname, color=color)
-
-    # Adjust legend to stay inside figure
-    ax.legend(ncols=4, bbox_to_anchor=(1.02, 1),
-          loc='upper left', fontsize='small', frameon=False)        
-
-    plt.tight_layout()
-    return fig, ax
-
-tally_dict, noc_options = make_cluster_tally(noc, core_clusters)
-core_bar_chart(tally_dict, noc_options)
-plt.savefig('core_number_stack_test.png')
-
-def neuron_class_pie_charts(node_class_prop, classes):
-    labels = list(node_class_prop.keys())
-    data = np.array([node_class_prop[k] for k in labels])
-
-    n_clusters = len(labels)
-    n_cols = int(math.ceil(math.sqrt(n_clusters)))
-    n_rows = int(math.ceil(math.sqrt(n_clusters)))
-
-    fig, axes = plt.subplots(n_rows, n_cols, figsize=(5*n_cols, 5*n_rows))
-    axes = np.array(axes).reshape(n_rows, n_cols)
-
-    category_colors = plt.colormaps['rainbow'](
-        np.linspace(0.15, 0.85, len(classes))
-    )
-
-    idx = 0
-    for r in range(n_rows):
-        for c in range(n_cols):
-            ax = axes[r, c]
-
-            if idx < n_clusters:
-                props = data[idx]
-                if np.sum(props) == 0:
-                    ax.axis("off")
-                    idx += 1
-                    continue
-
-                ax.pie(
-                    props,
-                    colors=category_colors
-                )
-                ax.set_title(f"Neuron {labels[idx]}", fontsize=14)
-
-            else:
-                ax.axis("off")
-
-            idx += 1
-
-    from matplotlib.patches import Patch
-    legend_handles = [Patch(facecolor=category_colors[i], label=classes[i])
-                      for i in range(len(classes))]
-
-    fig.legend(
-        handles=legend_handles,
-        title="Classes",
-        loc='lower center',
-        ncol=len(classes),
-        frameon=False,
-        fontsize=18,
-        title_fontsize=18,
-        bbox_to_anchor=(0.5, 0.02),
-        bbox_transform=fig.transFigure
-    )
-
-    return fig, axes
-
-
-    from matplotlib.patches import Patch
-
-    max_cols = 10  # max number of legend entries per row
-    ncol = min(len(category_names), max_cols)
-    nrows = int(np.ceil(len(category_names) / max_cols))
-
-    legend_handles = [Patch(facecolor=category_colors[i], label=str(category_names[i]))
-                    for i in range(len(category_names))]
-
-    plt.subplots_adjust(bottom=0.18)  # leave more space for the legend
-
-    fig.legend(
-        handles=legend_handles,
-        title="Number of cores:",
-        loc='lower center',
-        ncol=ncol,
-        frameon=False,
-        fontsize=20,          # increase font size
-        title_fontsize=20,    # increase title size
-        bbox_to_anchor=(0.5, 0.02),
-        bbox_transform=fig.transFigure
-        )
-
-    #plt.tight_layout()
-    return fig, axes
-
-fig, axes = neuron_class_pie_charts(node_class_prop, classes)
-plt.savefig("neuron_class_piecharts.png")
 
 
 #

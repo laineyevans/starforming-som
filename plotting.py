@@ -160,6 +160,8 @@ def _build_neuron_assignment(som_results, labels, config):
     Build a dict mapping neuron_id → [sample indices]
     Include all samples (original + augmented).
     """
+    if getattr(config, "som_type", None) == "soumap":
+        return _build_neuron_assignment_from_preds(som_results, labels)
     neuron_map = {idx: [] for idx in range(config.n_num * config.m_num)}
 
     for i, lbl in enumerate(labels):
@@ -167,6 +169,124 @@ def _build_neuron_assignment(som_results, labels, config):
         neuron_map[int(node)].append(i)
 
     return neuron_map
+
+
+def _build_neuron_assignment_from_preds(preds, labels):
+    """Build prototype → sample-index assignments from BMU predictions.
+
+    Unlike the fixed-grid helper, this supports an arbitrary number of
+    prototypes (and therefore SOUMAP's non-lattice prototype coordinates).
+    """
+    preds = np.asarray(preds).reshape(-1)
+    neuron_map = {}
+    for sample_idx, prototype in enumerate(preds):
+        try:
+            prototype = int(prototype)
+        except (TypeError, ValueError):
+            continue
+        neuron_map.setdefault(prototype, []).append(sample_idx)
+    return neuron_map
+
+
+def plot_soumap_mpec_fused_graph(soumap_result, mpec, config):
+    """Plot MPEC's weighted fused graph with its final prototype labels."""
+    from matplotlib.collections import LineCollection
+    from matplotlib.lines import Line2D
+    from matplotlib.colors import Normalize
+
+    graph = getattr(mpec, "fused_graph_", None)
+    coords = np.asarray(soumap_result.get("coords", []), dtype=float)
+    active = np.asarray(getattr(mpec, "active_indices_", []), dtype=int).reshape(-1)
+    labels = np.asarray(getattr(mpec, "labels_", []))
+    if graph is None:
+        graph_size = len(active) if len(active) else len(labels)
+    else:
+        graph_size = int(graph.shape[0])
+    if graph_size == 0:
+        active = np.empty(0, dtype=int)
+    elif len(active) != graph_size:
+        active = np.arange(graph_size, dtype=int)
+    if len(active) and coords.ndim == 2 and coords.shape[0] > int(active.max()):
+        positions = coords[active, :2]
+    else:
+        positions = np.empty((graph_size, 2), dtype=float)
+    valid_positions = (
+        positions.shape == (graph_size, 2) and np.isfinite(positions).all()
+    )
+    if not valid_positions:
+        # A deterministic layout keeps diagnostics useful when coordinates are
+        # absent, malformed, or contain NaNs.
+        if graph_size:
+            theta = np.linspace(0, 2 * np.pi, graph_size, endpoint=False)
+            positions = np.column_stack((np.cos(theta), np.sin(theta)))
+        else:
+            positions = np.empty((0, 2))
+
+    edge_segments, edge_weights = [], []
+    if graph is not None and graph_size:
+        coo = graph.tocoo()
+        for left, right, weight in zip(coo.row, coo.col, coo.data):
+            if left >= right or not np.isfinite(weight):
+                continue
+            edge_segments.append([positions[left], positions[right]])
+            edge_weights.append(float(weight))
+
+    output_dir = _ensure_plot_subdir(
+        config, getattr(config, "mpec_output_dir", None) or "mpec_plots"
+    )
+    out_file = os.path.join(output_dir, "mpec_fused_graph.png")
+    fig, ax = plt.subplots(figsize=(8, 6))
+    if edge_weights:
+        lo, hi = min(edge_weights), max(edge_weights)
+        if lo == hi:
+            delta = max(abs(lo) * 0.05, 1e-12)
+            lo, hi = lo - delta, hi + delta
+        norm = Normalize(vmin=lo, vmax=hi)
+        collection = LineCollection(
+            edge_segments, cmap="viridis", norm=norm, linewidths=1.5,
+            alpha=0.8,
+        )
+        collection.set_array(np.asarray(edge_weights))
+        ax.add_collection(collection)
+        fig.colorbar(collection, ax=ax, label="MPEC fused edge weight")
+
+    max_active = int(active.max()) if len(active) else -1
+    cluster_values = labels[active] if len(labels) > max_active else np.full(graph_size, -1)
+    normalized_clusters = []
+    for value in cluster_values:
+        try:
+            value = int(value)
+        except (TypeError, ValueError, OverflowError):
+            value = -1
+        normalized_clusters.append(value if value >= 0 else -1)
+    cluster_values = np.asarray(normalized_clusters, dtype=int)
+    unique_clusters = sorted(set(cluster_values[cluster_values >= 0].tolist()))
+    cmap = plt.get_cmap("tab20", max(len(unique_clusters), 1))
+    colors = {cluster: cmap(i) for i, cluster in enumerate(unique_clusters)}
+    for cluster in unique_clusters:
+        mask = cluster_values == cluster
+        ax.scatter(positions[mask, 0], positions[mask, 1], s=70,
+                   color=colors[cluster], edgecolor="black", linewidth=0.4)
+    if graph_size and not unique_clusters:
+        ax.scatter(positions[:, 0], positions[:, 1], s=70, color="lightgray",
+                   edgecolor="black", linewidth=0.4)
+    if unique_clusters:
+        ax.legend(
+            handles=[Line2D([0], [0], marker="o", linestyle="", color="w",
+                            markerfacecolor=colors[c], markeredgecolor="black",
+                            label=f"Cluster {c}") for c in unique_clusters],
+            title="Prototype cluster", loc="best",
+        )
+    ax.set_title("SOUMAP MPEC fused graph")
+    ax.set_xlabel("Prototype coordinate 1")
+    ax.set_ylabel("Prototype coordinate 2")
+    ax.set_aspect("equal", adjustable="datalim")
+    ax.autoscale()
+    fig.tight_layout()
+    fig.savefig(out_file, dpi=150)
+    plt.close(fig)
+    print(f"Saved SOUMAP MPEC fused graph to {out_file}")
+    return out_file
 
 
 def _best_per_neuron_indices(som_results, labels, sil_scores, config):
@@ -1406,20 +1526,12 @@ def _parse_evolutionary_stage_clusters(classification_file):
             exp_vals = re.findall(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", exp_line)
             exp = np.array(list(map(float, exp_vals))) if exp_vals else np.zeros_like(obs, dtype=float)
 
-            chi_line = lines[i + 2] if i + 2 < len(lines) else ""
-            chi_match = re.search(r"Chi-square:\s*([\d\.]+)", chi_line)
-            p_match = re.search(r"p-value:\s*([\d\.]+)", chi_line)
-            chi2 = float(chi_match.group(1)) if chi_match else np.nan
-            pval = float(p_match.group(1)) if p_match else np.nan
-
             clusters[idx] = {
                 "observed": obs,
                 "expected": exp,
-                "chi2": chi2,
-                "p": pval,
             }
 
-            i += 3
+            i += 2
         else:
             i += 1
 
@@ -1427,7 +1539,7 @@ def _parse_evolutionary_stage_clusters(classification_file):
 
 
 def _plot_gsom_evolutionary_stage(clusters, gsom, config, neuron_to_plot=None):
-    """Plot GSOM evolutionary stage as a sparse node-position map plus an optional bar chart."""
+    """Plot GSOM evolutionary stage as a sparse node-position map."""
     if not clusters:
         return
 
@@ -1483,7 +1595,10 @@ def _plot_gsom_evolutionary_stage(clusters, gsom, config, neuron_to_plot=None):
         x0, x1 = node.x - 0.5, node.x + 0.5
         y0, y1 = node.y - 0.5, node.y + 0.5
 
+        
+
         if primary == "na" and len(order) > 1:
+            # Upper-right triangle: na
             tri_top = Polygon(
                 [(x0, y1), (x1, y1), (x1, y0)],
                 closed=True,
@@ -1493,6 +1608,7 @@ def _plot_gsom_evolutionary_stage(clusters, gsom, config, neuron_to_plot=None):
             )
             ax.add_patch(tri_top)
 
+            # Lower-left triangle: second-most abundant category
             tri_bot = Polygon(
                 [(x0, y1), (x0, y0), (x1, y0)],
                 closed=True,
@@ -1502,18 +1618,43 @@ def _plot_gsom_evolutionary_stage(clusters, gsom, config, neuron_to_plot=None):
             )
             ax.add_patch(tri_bot)
 
-            if len(gsom.nodes) <= 80:
-                ax.text(
-                    node.x,
-                    node.y,
-                    f"na\n{f1:.2f}",
-                    ha="center",
-                    va="center",
-                    fontsize=6,
-                    color="black",
-                    clip_on=True,
-                    zorder=4,
+            # Black outline around the full neuron box
+            ax.add_patch(
+                Polygon(
+                    [(x0, y0), (x1, y0), (x1, y1), (x0, y1)],
+                    closed=True,
+                    facecolor="none",
+                    edgecolor="black",
+                    linewidth=0.6,
+                    zorder=5,
                 )
+            )
+
+            # na label: upper-right triangle centroid
+            ax.text(
+                node.x + 1/6,
+                node.y + 1/6,
+                f"na\n{f1:.2f}",
+                ha="center",
+                va="center",
+                fontsize=6 if len(gsom.nodes) > 80 else 7,
+                color="black",
+                clip_on=True,
+                zorder=4,
+            )
+
+            # Secondary category label: lower-left triangle centroid
+            ax.text(
+                node.x - 1/6,
+                node.y - 1/6,
+                f"{secondary}\n{f2:.2f}",
+                ha="center",
+                va="center",
+                fontsize=6 if len(gsom.nodes) > 80 else 7,
+                color=_text_color(secondary),
+                clip_on=True,
+                zorder=4,
+            )
         else:
             ax.add_patch(
                 Rectangle(
@@ -1576,34 +1717,9 @@ def _plot_gsom_evolutionary_stage(clusters, gsom, config, neuron_to_plot=None):
     plt.close(fig)
     print(f"Saved GSOM evolutionary stage grid to {grid_out}")
 
-    if neuron_to_plot is None or neuron_to_plot not in clusters:
-        return
-
-    d = clusters[neuron_to_plot]
-    x = np.arange(len(stages))
-    width = 0.35
-
-    plt.figure(figsize=(7, 7))
-    plt.bar(x - width/2, d["observed"], width, label="Observed", color="rebeccapurple")
-    plt.bar(x + width/2, d.get("expected", np.zeros_like(d["observed"])), width, label="Expected", color="lightsteelblue")
-
-    plt.xticks(x, stages, fontsize=12)
-    plt.ylabel("Count", fontsize=13)
-    p_val = d.get("p", np.nan)
-    title_text = rf"$p = {p_val:.4f}$" if np.isfinite(p_val) else "p = nan"
-    plt.title(title_text, fontsize=14)
-    plt.tick_params(axis="both", labelsize=10)
-    plt.legend()
-    plt.tight_layout()
-    evo_bar_dir = _ensure_plot_subdir(config, "evolutionary_stage_bar_charts")
-    bar_out = os.path.join(evo_bar_dir, f"gsom_evolutionary_stage_node_{neuron_to_plot}.png")
-    plt.savefig(bar_out, dpi=200)
-    plt.close()
-    print(f"Saved GSOM observed vs expected plot for node {neuron_to_plot} to {bar_out}")
-
 
 def plot_evolutionary_stage(classification_file, config, neuron_to_plot=None, gsom=None):
-    """Plot dominant evolutionary stage per neuron and a per-neuron observed/expected bar chart.
+    """Plot the dominant evolutionary stage for each neuron.
 
     classification_file should match the format written by save_results.save_all_results
     (COMBINEDclassification_info.txt). If the file is missing, the plots are skipped.
@@ -1715,32 +1831,6 @@ def plot_evolutionary_stage(classification_file, config, neuron_to_plot=None, gs
     plt.savefig(grid_out, dpi=200)
     plt.close()
     print(f"Saved evolutionary stage grid to {grid_out}")
-
-    if neuron_to_plot is None or neuron_to_plot not in clusters:
-        return
-
-    d = clusters[neuron_to_plot]
-    labels = ["Q", "P", "Y", "H", "na"]
-    x = np.arange(len(labels))
-    width = 0.35
-
-    plt.figure(figsize=(7, 7))
-    plt.bar(x - width/2, d["observed"], width, label="Observed", color="rebeccapurple")
-    plt.bar(x + width/2, d.get("expected", np.zeros_like(d["observed"])), width, label="Expected", color="lightsteelblue")
-
-    plt.xticks(x, labels, fontsize=14)
-    plt.ylabel("Count", fontsize=16)
-    p_val = d.get("p", np.nan)
-    title_text = rf"$p = {p_val:.4f}$" if np.isfinite(p_val) else "p = nan"
-    plt.title(title_text, fontsize=16)
-    plt.tick_params(axis="both", labelsize=12)
-    plt.legend()
-    plt.tight_layout()
-    evo_bar_dir = _ensure_plot_subdir(config, "evolutionary_stage_bar_charts")
-    bar_out = os.path.join(evo_bar_dir, f"evolutionary_stage_neuron_{neuron_to_plot}.png")
-    plt.savefig(bar_out, dpi=200)
-    plt.close()
-    print(f"Saved observed vs expected plot for neuron {neuron_to_plot} to {bar_out}")
 
 
 def plot_gsom_hits_map(gsom, encoded_data, config, labels=None):

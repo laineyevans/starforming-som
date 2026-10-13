@@ -45,19 +45,12 @@ while i < len(lines):
         exp_line = lines[i + 1]
         exp = np.array(list(map(float, re.findall(r"[\d\.]+", exp_line))))
 
-        # chi-square line
-        chi_line = lines[i + 2]
-        chi2 = float(re.search(r"Chi-square:\s*([\d\.]+)", chi_line).group(1))
-        pval = float(re.search(r"p-value:\s*([\d\.]+)", chi_line).group(1))
-
         clusters[idx] = {
             "observed": obs,
             "expected": exp,
-            "chi2": chi2,
-            "p": pval
         }
 
-        i += 3
+        i += 2
     else:
         i += 1
 
@@ -156,27 +149,5 @@ plt.savefig(os.path.join(OUTPUT_DIR, "neuron_dominant_stage_plasma_split.png"), 
 plt.close()
 
 # --------------------------------------------------
-# PER-NEURON OBSERVED VS EXPECTED PLOT
+# PER-NEURON OBSERVED VS EXPECTED PLOT HAS BEEN REMOVED
 # --------------------------------------------------
-
-d = clusters[NEURON_TO_PLOT]
-
-labels = ["Q", "P", "Y", "H", "na"]
-x = np.arange(len(labels))
-width = 0.35
-
-plt.figure(figsize=(7, 7))
-plt.bar(x - width/2, d["observed"], width, label="Observed", color = "rebeccapurple")
-plt.bar(x + width/2, d["expected"], width, label="Expected", color = "lightsteelblue")
-
-plt.xticks(x, labels, fontsize=20)
-plt.ylabel("Count", fontsize=20)
-plt.title(rf"$p = {d['p']:.4f}$", fontsize=20)
-plt.tick_params(axis="both", labelsize=20)
-plt.legend()
-plt.tight_layout()
-plt.savefig(
-    os.path.join(OUTPUT_DIR, f"neuron_{NEURON_TO_PLOT}_obs_vs_exp.png"),
-    dpi=200
-)
-plt.close()
