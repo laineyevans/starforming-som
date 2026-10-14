@@ -9,6 +9,9 @@ Original reference implementation by Philipp Ludwig (MIT licence).
 
 import numpy as np
 from collections import defaultdict
+import json
+import os
+from init_utils import make_init, resolve_init
 
 
 class GSONode:
@@ -51,7 +54,10 @@ class GSOM:
                  min_hits_to_grow=2,
                  min_active_neighbours_to_grow=2,
                  init_grid_size=2,
-                 record_growth_snapshots=False):
+                 record_growth_snapshots=False,
+                 *,
+                 lr_end=None,
+                 nb_lr_fraction=0.3):
         self.dim = dim
         self.spread_factor = spread_factor
         self.init_lr = init_lr
@@ -59,11 +65,25 @@ class GSOM:
         self.seed = seed
         self.max_nodes = max_nodes
         self.growth_phase_ratio = growth_phase_ratio
+        if lr_end is not None and not 0 < lr_end <= init_lr:
+            raise ValueError("lr_end must satisfy 0 < lr_end <= init_lr")
+        if not 0 <= nb_lr_fraction <= 1:
+            raise ValueError("nb_lr_fraction must be between 0 and 1")
+        self.lr_end = lr_end
+        self.nb_lr_fraction = nb_lr_fraction
         self.min_hits_to_grow = int(min_hits_to_grow)
         self.min_active_neighbours_to_grow = int(min_active_neighbours_to_grow)
         self._rng = np.random.default_rng(seed)
         self._record_snapshots = record_growth_snapshots
         self.growth_snapshots = []
+        self.growth_events = 0
+        self.blocked_hits = 0
+        self.blocked_neighbours = 0
+        self.blocked_no_boundary = 0
+        self.blocked_cap = 0
+        self.blocked_error = 0
+        self.growth_log = []
+        self.nodes_at_growth_end = None
 
         # Growing threshold
         self._GT = -dim * np.log2(spread_factor)
@@ -98,15 +118,14 @@ class GSOM:
         # If initial vectors supplied (e.g. from data), use them to set the
         # seed node weights. Expect one vector per seed node (row-major order).
         if init_vectors is not None:
-            try:
-                iv = list(init_vectors)
-                for i, node in enumerate(self.nodes):
-                    if i >= len(iv):
-                        break
-                    node.weights = np.asarray(iv[i], dtype=np.float64)
-            except Exception:
-                # If anything goes wrong, silently continue with random init
-                pass
+            iv = np.asarray(init_vectors)
+            expected_shape = (len(self.nodes), self.dim)
+            if iv.shape != expected_shape:
+                raise ValueError(
+                    f"init_vectors must have shape {expected_shape}, got {iv.shape}"
+                )
+            for i, node in enumerate(self.nodes):
+                node.weights = np.array(iv[i], dtype=np.float64, copy=True)
 
         self._coord_map = {(n.x, n.y): n for n in self.nodes}
         self._trained = False
@@ -244,31 +263,38 @@ class GSOM:
                 cnt += 1
         return cnt
 
-    def _maybe_grow(self, node):
+    def _maybe_grow(self, node, iteration):
         if node.error <= self._GT:
+            self.blocked_error += 1
             return
 
         # Anti-tail guardrails: require repeat hits and support from more than
         # one active neighbour before allowing expansion.
         if node.hit_count < self.min_hits_to_grow:
+            self.blocked_hits += 1
             return
         if self._active_neighbour_count(node) < self.min_active_neighbours_to_grow:
+            self.blocked_neighbours += 1
             return
 
         if not node.is_boundary():
             node = self._find_similar_boundary(node)
             if node is None:
+                self.blocked_no_boundary += 1
                 return
 
         if self.max_nodes is not None:
             remaining = int(self.max_nodes - len(self.nodes))
             if remaining <= 0:
+                self.blocked_cap += 1
                 return
         else:
             remaining = None
 
         grown = self._grow(node, max_new=remaining)
         if grown:
+            self.growth_events += 1
+            self.growth_log.append((iteration, len(self.nodes)))
             node.error = 0.5 * self._GT
             # Require fresh support before this boundary can grow again.
             node.hit_count = 0
@@ -344,6 +370,35 @@ class GSOM:
 
         return removed_total
 
+    def _lr_at(self, progress):
+        if self.lr_end is None:
+            return self.init_lr * np.exp(-3.0 * progress)
+        k = np.log(self.init_lr / self.lr_end)
+        return self.init_lr * np.exp(-k * progress)
+
+    def _adapt(self, bmu, inp, lr):
+        bmu.adjust_weights(inp, lr)
+        for nb in [bmu.left, bmu.right, bmu.up, bmu.down]:
+            if nb is not None:
+                nb.adjust_weights(inp, lr * self.nb_lr_fraction)
+
+    def growth_summary(self):
+        return {
+            "seed_nodes": self.init_grid_size[0] * self.init_grid_size[1],
+            "final_nodes": len(self.nodes),
+            "max_nodes": self.max_nodes,
+            "nodes_at_growth_end": self.nodes_at_growth_end,
+            "growth_events": self.growth_events,
+            "blocked_hits": self.blocked_hits,
+            "blocked_neighbours": self.blocked_neighbours,
+            "blocked_no_boundary": self.blocked_no_boundary,
+            "blocked_cap": self.blocked_cap,
+            "blocked_error": self.blocked_error,
+            "growth_cutoff": int(self._growth_cutoff),
+            "iterations": int(self._iterations),
+            "GT": self._GT,
+        }
+
     # ------------------------------------------------------------------
     # Training
     # ------------------------------------------------------------------
@@ -357,7 +412,10 @@ class GSOM:
         n = X.shape[0]
         iters = iterations if iterations is not None else self.max_iterations
         growth_cutoff = int(iters * self.growth_phase_ratio)
-        nb_lr_fraction = 0.3  # neighbours learn at 30% of BMU rate
+        self._growth_cutoff = growth_cutoff
+        self._iterations = iters
+        if growth_cutoff == 0:
+            self.nodes_at_growth_end = len(self.nodes)
 
         # Periodic snapshot cadence: aim for ~100 evenly-spaced frames.
         # Node-insertion snapshots are recorded separately inside _insert.
@@ -365,27 +423,25 @@ class GSOM:
         _last_snap_nodes = len(self.nodes)  # track topology changes
 
         for it in range(iters):
+            if it >= growth_cutoff and self.nodes_at_growth_end is None:
+                self.nodes_at_growth_end = len(self.nodes)
             idx = self._rng.integers(n)
             inp = X[idx]
 
             # Exponential learning rate decay
             progress = it / max(iters - 1, 1)
-            lr = self.init_lr * np.exp(-3.0 * progress)
+            lr = self._lr_at(progress)
 
             bmu = self._find_bmu(inp)
             bmu.hit_count += 1
 
-            # Adapt BMU + direct neighbours (neighbours at reduced rate)
-            bmu.adjust_weights(inp, lr)
-            for nb in [bmu.left, bmu.right, bmu.up, bmu.down]:
-                if nb is not None:
-                    nb.adjust_weights(inp, lr * nb_lr_fraction)
+            self._adapt(bmu, inp, lr)
 
             # Error accumulation & growth (only during growth phase)
             err = self._distance(bmu.weights, inp)
             bmu.error += err
             if it < growth_cutoff:
-                self._maybe_grow(bmu)
+                self._maybe_grow(bmu, it)
 
             # Periodic snapshot (captures weight evolution even without growth)
             if _snap_interval is not None and (it + 1) % _snap_interval == 0:
@@ -399,6 +455,8 @@ class GSOM:
                       f" lr={lr:.5f},"
                       f" phase={'growing' if it < growth_cutoff else 'smoothing'}")
 
+        if self.nodes_at_growth_end is None:
+            self.nodes_at_growth_end = len(self.nodes)
         self._trained = True
         if verbose:
             print(f"GSOM training complete. Final node count: {len(self.nodes)}")
@@ -483,45 +541,38 @@ def train_gsom(encoded_data, labels, config):
     """Train a GSOM and return (gsom, preds_coords, qe)."""
     spread = getattr(config, "gsom_spread_factor", 0.5)
     lr = getattr(config, "gsom_learning_rate", 0.3)
+    lr_end = getattr(config, "gsom_lr_end", None)
+    nb_lr_fraction = getattr(config, "gsom_nb_lr_fraction", 0.3)
     iters = getattr(config, "gsom_iterations", 200000)
     max_nodes = getattr(config, "gsom_max_nodes", None)
     growth_ratio = getattr(config, "gsom_growth_phase_ratio", 0.5)
     min_hits_to_grow = getattr(config, "gsom_min_hits_to_grow", 2)
     min_active_neighbours_to_grow = getattr(config, "gsom_min_active_neighbours_to_grow", 2)
     init_grid_size = getattr(config, "gsom_init_grid_size", 2)
+    init_method = resolve_init(config, "gsom")
+    init_seed = getattr(config, "init_seed", 42)
 
-    # Determine the total number of seed nodes for k-means++ initialisation
+    rough_epochs = getattr(config, "rough_epochs_num", None)
+    fine_epochs = getattr(config, "fine_epochs_num", None)
+    if (rough_epochs is not None and fine_epochs is not None
+            and iters != rough_epochs + fine_epochs):
+        print("Info: GSOM and SOM training budgets differ.")
+    print(f"GSOM seed: {init_seed}")
+
+    # Determine the seed grid shape for shared initialisation.
     if isinstance(init_grid_size, (list, tuple)) and len(init_grid_size) == 2:
-        n_seed_nodes = int(init_grid_size[0]) * int(init_grid_size[1])
+        grid_shape = (int(init_grid_size[0]), int(init_grid_size[1]))
     else:
-        n_seed_nodes = max(2, int(init_grid_size)) ** 2
-
-    # Use k-means++ style seeding to choose sensible starting weights for the
-    # seed nodes so initial error spikes are reduced.
-    def _kmeans_plus_plus(X, k, rng):
-        n = X.shape[0]
-        centers = []
-        # first center random
-        idx = int(rng.integers(n))
-        centers.append(X[idx])
-        for _ in range(1, k):
-            # distance to nearest center
-            d2 = np.min(np.square(X - centers[-1]).sum(axis=1, keepdims=True), axis=1) if len(centers) == 1 else np.min(
-                np.stack([np.sum((X - c) ** 2, axis=1) for c in centers], axis=1), axis=1)
-            # avoid zero-sum
-            if d2.sum() == 0:
-                idx = int(rng.integers(n))
-            else:
-                probs = d2 / d2.sum()
-                idx = int(rng.choice(n, p=probs))
-            centers.append(X[idx])
-        return centers
-
-    rng = np.random.default_rng(getattr(config, "seed", None))
-    try:
-        init_vecs = _kmeans_plus_plus(np.asarray(encoded_data), n_seed_nodes, rng)
-    except Exception:
-        init_vecs = None
+        side = max(2, int(init_grid_size))
+        grid_shape = (side, side)
+    init_vecs = make_init(
+        init_method,
+        encoded_data,
+        grid_shape=grid_shape,
+        seed=init_seed,
+        pca_span=getattr(config, "init_pca_span", 2.0),
+    )
+    print(f"GSOM initialisation: {init_method}")
 
     record_snaps = getattr(config, "plot_gsom_growth_animation", False)
 
@@ -537,6 +588,9 @@ def train_gsom(encoded_data, labels, config):
         min_active_neighbours_to_grow=min_active_neighbours_to_grow,
         init_grid_size=init_grid_size,
         record_growth_snapshots=record_snaps,
+        seed=init_seed,
+        lr_end=lr_end,
+        nb_lr_fraction=nb_lr_fraction,
     )
 
     gsom.fit(encoded_data, iterations=iters)
@@ -550,6 +604,41 @@ def train_gsom(encoded_data, labels, config):
         )
         if removed > 0:
             print(f"GSOM pruning removed {removed} empty tail node(s). Final nodes={len(gsom.nodes)}")
+
+    summary = gsom.growth_summary()
+    summary_text = "\n".join(
+        ["GSOM growth summary:"]
+        + [f"  {key}: {value}" for key, value in summary.items()]
+    )
+    print(summary_text)
+    if max_nodes is not None and len(gsom.nodes) < max_nodes:
+        blocked = {
+            key: value for key, value in summary.items()
+            if key.startswith("blocked_") and key != "blocked_error"
+        }
+        most_common_guard = max(blocked, key=blocked.get)
+        print(
+            f"WARNING: GSOM stopped at {len(gsom.nodes)} nodes, below max_nodes={max_nodes}; "
+            "comparison with a 36-prototype SOM/SOUMAP is not at equal M. "
+            f"Most frequent growth guard: {most_common_guard}={blocked[most_common_guard]}; "
+            f"blocked_error={summary['blocked_error']}."
+        )
+    if getattr(config, "gsom_require_full_nodes", False) and (
+            max_nodes is not None and len(gsom.nodes) < max_nodes):
+        raise RuntimeError(summary_text)
+
+    run_dir = getattr(config, "run_dir", None)
+    if run_dir:
+        output_summary = dict(summary)
+        output_summary.update({
+            "lr_end": gsom.lr_end,
+            "nb_lr_fraction": gsom.nb_lr_fraction,
+            "seed": init_seed,
+            "init_method": init_method,
+        })
+        os.makedirs(run_dir, exist_ok=True)
+        with open(os.path.join(run_dir, "gsom_growth_summary.json"), "w") as f:
+            json.dump(output_summary, f, indent=2, default=str)
 
     preds = gsom.predict(encoded_data)
     qe = gsom.quantization_error(encoded_data)

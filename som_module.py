@@ -1,5 +1,6 @@
 import numpy as np
 import math
+from init_utils import make_init, resolve_init
 
 
 class SOM:
@@ -7,7 +8,8 @@ class SOM:
     A 2-D rectangular Self-Organizing Map implemented in NumPy.
     """
 
-    def __init__(self, m=3, n=3, dim=3, lr=1.0, sigma=1.0, max_iter=3000, random_state=None):
+    def __init__(self, m=3, n=3, dim=3, lr=1.0, sigma=1.0, max_iter=3000,
+                 random_state=None, *, init_weights=None):
         self.m = m
         self.n = n
         self.dim = dim
@@ -21,7 +23,16 @@ class SOM:
         self.random_state = random_state
         rng = np.random.default_rng(random_state)
 
-        self.weights = rng.normal(size=(m * n, dim))
+        if init_weights is None:
+            self.weights = rng.normal(size=(m * n, dim))
+        else:
+            init_weights = np.asarray(init_weights)
+            if init_weights.shape != (m * n, dim):
+                raise ValueError(
+                    f"init_weights must have shape {(m * n, dim)}, "
+                    f"got {init_weights.shape}"
+                )
+            self.weights = np.array(init_weights, dtype=np.float64, copy=True)
         self._locations = self._get_locations(m, n)
 
         self._inertia_ = None
@@ -283,6 +294,17 @@ class SOM:
 
 
 def train_som(encoded_data, labels, config):
+    init_method = resolve_init(config, "som")
+    init_seed = getattr(config, "init_seed", 42)
+    init_weights = make_init(
+        init_method,
+        encoded_data,
+        grid_shape=(config.n_num, config.m_num),
+        seed=init_seed,
+        pca_span=getattr(config, "init_pca_span", 2.0),
+    )
+    np.random.seed(init_seed)
+    print(f"SOM initialisation: {init_method}")
     som = SOM(
         m=config.n_num,
         n=config.m_num,
@@ -290,6 +312,8 @@ def train_som(encoded_data, labels, config):
         lr=config.rough_learning_rate,
         sigma=config.rough_sigma,
         max_iter=config.rough_epochs_num + config.fine_epochs_num,
+        random_state=init_seed,
+        init_weights=init_weights,
     )
 
 

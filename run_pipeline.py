@@ -561,21 +561,25 @@ def main():
     config.save_autoencoder_results = False
 
     # SOM toggle: "som" (fixed grid) or "gsom" (growing) or "soumap" (UMAP+SOM)
-    config.som_type = "som"
+    config.som_type = "soumap"  # "som" | "gsom" | "soumap"
+    config.init_method = "pca"        # "pca" | "kmeans++" | "random", shared default for som, gsom and soumap
+    config.som_init = None            # optional per-method override; None -> init_method
+    config.gsom_init = None
+    config.soumap_init = None
 
-    # SOM
+     # SOM
+    config.init_pca_span = 2.0
+    config.init_seed = 42
     config.n_num = 6
     config.m_num = 6
-    # config.rough_epochs_num = 200000
     config.rough_epochs_num = 40000
-    # config.fine_epochs_num = 200000
     config.fine_epochs_num = 80000
     config.rough_learning_rate = 0.2
     config.fine_learning_rate = 0.05
     config.rough_sigma = 2.5
     config.fine_sigma = 1.0
     config.fine_lr_end = 0.005
-    config.fine_sigma_end = 0.5
+    config.fine_sigma_end = 1.0
     config.som_fine_method = "random"
     config.som_block_size = 1000
     config.train_in_blocks_flag = True
@@ -583,9 +587,11 @@ def main():
     # GSOM 
     config.gsom_spread_factor = 0.6
     config.gsom_learning_rate = 0.2
-    config.gsom_iterations = 400000
-    config.gsom_max_nodes = 36     
-    config.gsom_growth_phase_ratio = 0.3
+    config.gsom_iterations = 120000  # old value: 400000
+    config.gsom_max_nodes = 64
+    config.gsom_growth_phase_ratio = 1 / 3  # old value: 0.3; mirrors the SOM's 40k rough / 80k fine split
+    config.gsom_lr_end = 0.005  # matches the SOM's final learning rate; with init_lr 0.2 this is k of about 3.69
+    config.gsom_nb_lr_fraction = 0.6  # at SOM sigma=1.0 adjacent-neuron weight is about 0.61; old GSOM value was 0.3; GSOM updates only four direct neighbours (no diagonals)
     config.gsom_min_hits_to_grow = 5 # require repeat BMU hits before a node can grow
     config.gsom_min_active_neighbours_to_grow = 3  # blocks one-neighbour chain growth (long tails)
     config.gsom_init_grid_size = 5       # initial seed grid: int -> NxN square, or (rows, cols) tuple

@@ -15,6 +15,7 @@ from importlib import metadata
 
 import numpy as np
 import scipy.sparse as sp
+from init_utils import resolve_init
 
 
 SOURCE_COLUMNS = [
@@ -101,7 +102,34 @@ def train_soumap(encoded_data, labels, config):
     }.get(som_values["proto_topo"], som_values["proto_topo"])
     umap_values = _array_config(config, "soumap_umap_")
     ctrl_values = _array_config(config, "soumap_ctrl_")
-    ctrl_values["random_state"] = getattr(config, "soumap_random_state", None)
+    init_method = resolve_init(config, "soumap")
+    init_seed = getattr(config, "init_seed", 42)
+    if init_method == "pca":
+        coord_init = "pca"
+        w_init = "kmeans"
+    elif str(init_method).lower() == "random":
+        coord_init = "random"
+        w_init = "kmeans"
+        warnings.warn(
+            "SOUMAP's wrapper does not expose its package W_init argument; "
+            "using coord_init='random' but package W_init='kmeans'.",
+            RuntimeWarning,
+        )
+    else:
+        coord_init = "pca"
+        w_init = "kmeans"
+        warnings.warn(
+            "SOUMAP does not support kmeans++ or custom prototype arrays; "
+            "using coord_init='pca' and package W_init='kmeans' instead.",
+            RuntimeWarning,
+        )
+    if getattr(config, "soumap_init", None) is not None or hasattr(config, "init_method"):
+        ctrl_values["coord_init"] = coord_init
+    ctrl_values["random_state"] = init_seed
+    print(
+        f"SOUMAP initialisation: requested={init_method}, "
+        f"coordinates={coord_init}, prototypes={w_init}"
+    )
     model = SOUMAP(
         M=M,
         som_params=SOMParams(**som_values),
@@ -131,6 +159,11 @@ def train_soumap(encoded_data, labels, config):
         "model": model, "M": M, "W": W, "coords": coords,
         "distances": distances, "bmu": bmu, "sample_coords": sample_coords,
         "qe": qe, "cadj": cadj,
+        "effective_init": {
+            "requested": init_method,
+            "coord_init": coord_init,
+            "prototype_init": w_init,
+        },
     }
 
 
@@ -306,6 +339,7 @@ def write_outputs(result, filenames, labels, sil_scores, config):
         "n_samples": len(bmu), "latent_dim": result["W"].shape[1],
         "final_quantization_error": float(np.mean(qe)),
         "soumap": {key: value for key, value in vars(config).items() if key.startswith("soumap_")},
+        "effective_init": result.get("effective_init", {}),
         "soumap_params": {
             "som": asdict(result["model"].som_params),
             "umap": asdict(result["model"].umap_params),
