@@ -7,9 +7,8 @@ import numpy as np
 from multiprocessing import cpu_count
 
 
-# ============================================================
+
 #  CONVOLUTIONAL AUTOENCODER
-# ============================================================
 
 class ConvAE(nn.Module):
     def __init__(self, input_h, input_w, bottleneck_dim=None, in_channels=1):
@@ -78,9 +77,9 @@ class ConvAE(nn.Module):
     
 
 
-# ============================================================
+
 #  TRAINING + ENCODING
-# ============================================================
+
 
 def train_autoencoder(dataset, config):
     """

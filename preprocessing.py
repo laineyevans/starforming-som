@@ -99,7 +99,7 @@ def process_single_file(args):
         return [masked], [filename], s_pc
     except Exception:
         return [], [], None
-#Another nice helper. The common FOV is selected as the median value and images r rescaled
+#The common FOV is selected as the median value and images r rescaled
 def worker_fov(args):
     img, s_pc, FOV_common, N_target = args
     minpix = float(np.median(img[np.isfinite(img)]))
@@ -132,7 +132,21 @@ def run_preprocessing(config):
         raw_datas     : processed but un-FOV-matched masked arrays (for plotting)
         fov_matched   : dict of FOV-matched original images
     """
-    files = [f.path for f in os.scandir(config.data_dir) if f.is_file()]
+    files = sorted(glob.glob(os.path.join(
+        config.data_dir,
+        "*",
+        "images",
+        "combined",
+        "7MTM2TM1",
+        "almagal",
+        "*_cont_7MTM2TM1_jointdeconv.image.fits",
+    )))
+    if not files:
+        raise FileNotFoundError(
+            "No continuum FITS files found under "
+            f"{config.data_dir}/<sourcename>/images/combined/7MTM2TM1/almagal"
+        )
+    total_sources = len(files)
     n_cores = max(1, cpu_count() - 2)
     print(f"Processing {len(files)} FITS files on {n_cores} cores...")
     props = []      # (filename, s_pc, FOV_pc)
@@ -277,6 +291,15 @@ def run_preprocessing(config):
         "target_side": config.sqrt_pixel_number,
         "meta": fov_meta,
     }
+
+    processed_sources = len(set(filenames))
+    skipped_sources = total_sources - processed_sources
+    print(
+        f"Continuum preprocessing complete: {processed_sources} sources preprocessed, "
+        f"{skipped_sources} skipped."
+    )
+    if skipped_sources:
+        print("Some sources were skipped because their FITS data, metadata, or usable emission was invalid.")
 
     return datas_scaled, labels, filenames, raw_datas, fov_matched, processed_2d, fov_info
 
@@ -440,4 +463,3 @@ def load_preprocessed_global(save_dir):
     fov_matched = {fn: img for fn, img in zip(filenames, raw_datas)}
 
     return datas_scaled, labels, filenames, raw_datas, fov_matched, processed_2d, fov_info
-

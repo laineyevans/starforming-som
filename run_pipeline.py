@@ -487,14 +487,12 @@ def main():
     config = Config()
 
     # flags
-    config.run_preprocessing = False     # run preprocessing or not
-    config.load_preprocessed = True    # load from disk instead 
-    config.save_continuum_fits = True   
-    config.run_island_segmentation = False
+    config.run_preprocessing = False
+    config.load_preprocessed = False
     config.cluster_info_saving = True
     config.add_flip_augmentation = True  # apply flips after loading preprocessed data
 
-    config.use_simulated_data = False  # if True, ignore real data paths and load simulated FITS from config.simulated_fits_dir
+    config.use_simulated_data = True  # if True, ignore real data paths and load simulated FITS from config.simulated_fits_dir
     config.run_autoencoder = True
     config.perform_som_training = True
     config.run_embedding_diagnostics = True
@@ -511,7 +509,7 @@ def main():
     config.plot_smoothed_per_neuron_examples = True
     config.plot_molecular_per_neuron_examples = True
     config.plot_autoencoder_recons = True
-    config.plot_representative_originals = False
+    config.plot_representative_originals = True
     config.plot_representative_processed = True
     config.plot_representative_smoothed = True
     config.plot_representative_molecular = True
@@ -537,8 +535,7 @@ def main():
     config.mpec_show_graph = False
     config.mpec_output_dir = None
 
-
-    # preprocessing (not needed anymore)
+    # preprocessing
     config.sqrt_pixel_number = 304
     config.noise_multiplier = 0
     config.threshold = 0.025
@@ -546,6 +543,7 @@ def main():
     config.min_island_size_floor = 100
     config.add_flipped_images = True
     config.add_rotated_images = False
+    config.save_continuum_fits = True
 
     # autoencoder
     config.ae_epochs = 400
@@ -561,8 +559,8 @@ def main():
     config.save_autoencoder_results = False
 
     # SOM toggle: "som" (fixed grid) or "gsom" (growing) or "soumap" (UMAP+SOM)
-    config.som_type = "soumap"  # "som" | "gsom" | "soumap"
-    config.init_method = "pca"        # "pca" | "kmeans++" | "random", shared default for som, gsom and soumap
+    config.som_type = "som"  # "som" | "gsom" | "soumap"
+    config.init_method = "random"        # "pca" | "kmeans++" | "random", shared default for som, gsom and soumap
     config.som_init = None            # optional per-method override; None -> init_method
     config.gsom_init = None
     config.soumap_init = None
@@ -588,13 +586,13 @@ def main():
     config.gsom_spread_factor = 0.6
     config.gsom_learning_rate = 0.2
     config.gsom_iterations = 120000  # old value: 400000
-    config.gsom_max_nodes = 64
+    config.gsom_max_nodes = 36
     config.gsom_growth_phase_ratio = 1 / 3  # old value: 0.3; mirrors the SOM's 40k rough / 80k fine split
     config.gsom_lr_end = 0.005  # matches the SOM's final learning rate; with init_lr 0.2 this is k of about 3.69
     config.gsom_nb_lr_fraction = 0.6  # at SOM sigma=1.0 adjacent-neuron weight is about 0.61; old GSOM value was 0.3; GSOM updates only four direct neighbours (no diagonals)
     config.gsom_min_hits_to_grow = 5 # require repeat BMU hits before a node can grow
     config.gsom_min_active_neighbours_to_grow = 3  # blocks one-neighbour chain growth (long tails)
-    config.gsom_init_grid_size = 5       # initial seed grid: int -> NxN square, or (rows, cols) tuple
+    config.gsom_init_grid_size = 4       # initial seed grid: int -> NxN square, or (rows, cols) tuple
 
     # SOUMAP (source defaults from soumap's parameter dataclasses)
     config.soumap_prototypes = 36
@@ -628,7 +626,7 @@ def main():
     config.soumap_ctrl_plot_every = 0
 
     # paths
-    config.data_dir = "/raid/scratch/mevans/newdata"
+    config.data_dir = "/almagal1/ALMA/ALMAGAL/ALMAGAL/data/2019.1.00195.L/sources"
     config.id_info_table = "/raid/scratch/mevans/imageproperties.dat"
     config.run_base_dir = "/raid/scratch/mevans"
     config.core_table = "/raid/scratch/mevans/table3.dat"
@@ -657,17 +655,12 @@ def main():
 
 
 
-    # run preprocessing
-    if config.run_preprocessing and config.load_preprocessed:
-        raise ValueError("Cannot run preprocessing and load preprocessed data at the same time.")
-
     if config.use_simulated_data:
         config.run_preprocessing = False
         config.load_preprocessed = False
-        config.run_island_segmentation = False
-        config.save_continuum_fits = False
         config.include_smoothed_channel = False
         config.include_molecular_line_channels = False
+        config.plot_representative_originals = True
         config.plot_smoothed_per_neuron_examples = False
         config.plot_molecular_per_neuron_examples = False
         config.plot_processed_per_neuron_examples = False
@@ -679,6 +672,7 @@ def main():
         config.add_flip_augmentation = True
         config.use_premade_autoencoder_results = True
         config.save_autoencoder_results = False
+        config.plot_evolutionary_stage = False
         config.premade_autoencoder_results_dir = "/raid/scratch/mevans/autoencoder_results_simulated"
 
         print(f"Loading simulated FITS from {config.simulated_fits_dir}...")
@@ -687,13 +681,8 @@ def main():
             config.sqrt_pixel_number,
         )
 
-    elif config.load_preprocessed:
-        print(f"Loading preprocessed continuum FITS from {config.continuum_preprocessed_dir}...")
-        datas_scaled, labels, filenames, raw_datas, fov_matched, processed_2d, fov_info = _load_preprocessed_fits(
-            config.continuum_preprocessed_dir
-        )
-
     elif config.run_preprocessing:
+        print("Preprocessing continuum sources...")
         datas_scaled, labels, filenames, raw_datas, fov_matched, processed_2d, fov_info = (
             preprocessing.run_preprocessing(config)
         )
@@ -707,11 +696,11 @@ def main():
             fov_matched,
             config,
             processed_2d=processed_2d,
-            fov_info=fov_info
+            fov_info=fov_info,
         )
 
     else:
-        raise RuntimeError("Either run_preprocessing or load_preprocessed must be True.")
+        raise RuntimeError("Continuum preprocessing is disabled.")
 
     # Optional flip augmentation applied post-preprocessing so it works when loading saved data
     if getattr(config, "add_flip_augmentation", False):

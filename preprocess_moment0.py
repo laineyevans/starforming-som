@@ -26,7 +26,7 @@ from skimage.morphology import closing
 from skimage.measure import label as skimage_label
 
 
-MOMENT0_DIR     = "/raid/scratch/mevans/moment0_with_rms2"
+MOMENT0_DIR     = "/raid/scratch/mevans/moment0_maps_with_rms"
 CONTINUUM_PREPROC_DIR = "/raid/scratch/mevans/Preprocessed_Datas/continuumpreprocessed"
 CONTINUUM_DIR   = "/raid/scratch/mevans/newdata"
 ID_INFO_TABLE   = "/raid/scratch/mevans/imageproperties.dat"

@@ -40,7 +40,7 @@ def extract_distance(source_id, id_info_table):
 # process the first 5 pairs. The original single-file logic is refactored
 # into `process_pair()` below.
 
-tm2tm1_dir = '/raid/scratch/hannahb/newdata'
+tm2tm1_dir = '/almagal1/ALMA/ALMAGAL/ALMAGAL/data/2019.1.00195.L/sources'
 tm2_dir = '/raid/scratch/hannahb/Data7mtm2'
 savedir = '/raid/scratch/mevans'
 
@@ -200,12 +200,25 @@ def process_pair(file_tm2tm1, file_tm2, savedir_base):
             pass
 
 
-# Build pairs and process the first 5 available
-tm2tm1_files = sorted([f for f in os.listdir(tm2tm1_dir) if f.endswith('7MTM2TM1_jointdeconv.image.fits')])
+# Build one continuum pair per source.  Each source directory also contains
+# four spectral-window products (spw0-spw3), which are not separate sources.
+tm2tm1_files = []
+for sourcename in os.listdir(tm2tm1_dir):
+    continuum_dir = os.path.join(
+        tm2tm1_dir, sourcename, 'images', 'combined', '7MTM2TM1', 'almagal'
+    )
+    if os.path.isdir(continuum_dir):
+        tm2tm1_files.extend(
+            os.path.join(continuum_dir, fname)
+            for fname in os.listdir(continuum_dir)
+            if fname.endswith('7MTM2TM1_jointdeconv.image.fits')
+            and '_cont_' in fname
+        )
+tm2tm1_files.sort()
 pairs = []
-for fname in tm2tm1_files:
+for path_tm2tm1 in tm2tm1_files:
+    fname = os.path.basename(path_tm2tm1)
     source = fname.split('_')[0]
-    path_tm2tm1 = os.path.join(tm2tm1_dir, fname)
     # find a matching tm2 file in tm2_dir that starts with the same source id
     candidates = [f for f in os.listdir(tm2_dir) if f.startswith(source) and '7MTM2_jointdeconv.image.fits' in f]
     if candidates:
@@ -220,6 +233,8 @@ else:
     total_pairs = len(pairs)
     processed_count = 0
     for file_a, file_b in pairs:
+        remaining = total_pairs - processed_count
+        print(f"\nSources left to process: {remaining}")
         print(f"\nProcessing pair:\n  {file_a}\n  {file_b}")
         try:
             process_pair(file_a, file_b, savedir)
@@ -228,4 +243,8 @@ else:
             print(f"Error processing pair {file_a}, {file_b}: {e}")
             continue
 
-    print(f"\nFinished. Successfully processed {processed_count} out of {total_pairs} pairs.")
+    print(
+        f"\nFinished. Successfully processed {processed_count} out of "
+        f"{total_pairs} pairs. Sources left to process: "
+        f"{total_pairs - processed_count}."
+    )
