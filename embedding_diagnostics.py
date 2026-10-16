@@ -16,6 +16,7 @@ from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE, trustworthiness
 from sklearn.metrics import adjusted_rand_score
 from sklearn.neighbors import NearestNeighbors
+from sim_time_ordering import _save_sim_colourings, parse_sim_metadata
 
 try:
     import umap
@@ -50,13 +51,15 @@ def _flip_type(label):
 
 
 def _save_scatter(path, embedding, values, title, cmap="viridis", categorical=False,
-                  labels=None, center_zero=False):
+                  labels=None, center_zero=False, categorical_cmap="tab10",
+                  cbar_label=None):
     rng = np.random.default_rng(42)
     order = rng.permutation(len(embedding))
     fig, ax = plt.subplots(figsize=(7, 6))
     if categorical:
         categories = list(dict.fromkeys(values))
-        colors = plt.get_cmap("tab10")(np.arange(len(categories)) % 10)
+        colors = plt.get_cmap(categorical_cmap)(
+            np.arange(len(categories)) % plt.get_cmap(categorical_cmap).N)
         lookup = dict(zip(categories, colors))
         for category in categories:
             mask = np.asarray([v == category for v in values])
@@ -70,7 +73,7 @@ def _save_scatter(path, embedding, values, title, cmap="viridis", categorical=Fa
         scatter = ax.scatter(embedding[order, 0], embedding[order, 1],
                              c=np.asarray(values)[order], cmap=cmap, norm=norm,
                              s=6, alpha=0.6, rasterized=True)
-        fig.colorbar(scatter, ax=ax)
+        fig.colorbar(scatter, ax=ax, label=cbar_label)
     ax.set_title(title)
     ax.set_xlabel("component 1")
     ax.set_ylabel("component 2")
@@ -178,20 +181,32 @@ def _flip_highlights(path, embedding, source_ids, flips):
     plt.close(fig)
 
 
+
 def _som_multiples(path, embedding, preds, som):
     fig, axes = plt.subplots(som.m, som.n, figsize=(12, 12), squeeze=False)
-    for cell, axis in enumerate(axes.flat):
-        axis.scatter(embedding[:, 0], embedding[:, 1], s=2, color="lightgrey",
-                     alpha=.35, rasterized=True)
+
+    for cell, (r, c) in enumerate(som._locations):
+        axis = axes[som.m - 1 - r, c]
+
+        axis.scatter(
+            embedding[:, 0], embedding[:, 1],
+            s=2, color="lightgrey", alpha=.35, rasterized=True
+        )
+
         mask = preds == cell
-        axis.scatter(embedding[mask, 0], embedding[mask, 1], s=3,
-                     color="tab:blue", alpha=.7, rasterized=True)
+        axis.scatter(
+            embedding[mask, 0], embedding[mask, 1],
+            s=3, color="tab:blue", alpha=.7, rasterized=True
+        )
+
         axis.set_title(str(cell), fontsize=7)
         axis.set_xticks([])
         axis.set_yticks([])
+
     fig.tight_layout()
     fig.savefig(path, dpi=200)
     plt.close(fig)
+
 
 
 def _fit_tsne(X, perplexity):
@@ -236,6 +251,8 @@ def run_embedding_diagnostics(encoded_data, preds, labels, filenames, raw_datas,
     if som is None:
         summary.append("Grid-based checks skipped: no fixed-grid SOM was supplied (GSOM/non-grid path).")
     embeddings = {}
+    sim_meta = parse_sim_metadata(filenames, labels)
+    sim_meta_subset = {name: values[subset] for name, values in sim_meta.items()}
     if umap is not None:
         for neighbors, min_dist in ((15, .07), (30, .07), (50, .07), (30, .3)):
             key = f"umap_n{neighbors}_d{min_dist}"
@@ -253,6 +270,9 @@ def run_embedding_diagnostics(encoded_data, preds, labels, filenames, raw_datas,
         embeddings[key] = embedding
         np.save(os.path.join(out_dir, key + ".npy"), embedding)
     for key, embedding in embeddings.items():
+        if getattr(config, "run_sim_embedding_colourings", False):
+            if np.any(np.isfinite(sim_meta["frame"][subset])):
+                _save_sim_colourings(out_dir, key, embedding, sim_meta_subset)
         values = preds[subset]
         if key in ("umap_n30_d0.07", "tsne_p50"):
             _save_scatter(os.path.join(out_dir, key + "_flip.png"), embedding, flips[subset], key + " flip type", categorical=True)

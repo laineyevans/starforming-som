@@ -1,6 +1,6 @@
 from config import Config
 import preprocessing
-import autoencoder
+import autoencoder_dispatch
 import som_module
 import gsom_module
 import soumap_module
@@ -546,17 +546,47 @@ def main():
     config.save_continuum_fits = True
 
     # autoencoder
+    config.autoencoder_method = "o2vae"  # "existing" | "o2vae"
+    if config.autoencoder_method not in autoencoder_dispatch.VALID_AUTOENCODER_METHODS:
+        raise ValueError(
+            f"Unknown autoencoder_method={config.autoencoder_method!r}; "
+            "expected 'existing' or 'o2vae'."
+        )
     config.ae_epochs = 400
     config.ae_batch_size = 32
     config.ae_learning_rate = 1e-3
     config.ae_bottleneck_dim =256
     config.ae_use_bottleneck = False
-    config.use_premade_autoencoder_results = True
+    config.use_premade_autoencoder_results = False
     config.premade_autoencoder_results_dir = "/raid/scratch/mevans/autoencoder_results_no_molecular_2048"
+    config.o2vae_autoencoder_results_dir = os.path.join(
+        os.path.dirname("/raid/scratch/mevans/autoencoder_results"),
+        "o2vae_autoencoder_results",
+    )
+    config.premade_o2vae_autoencoder_results_dir = os.path.join(
+        os.path.dirname(config.premade_autoencoder_results_dir),
+        "o2vae_autoencoder_results",
+    )
     # Set True if encoded_data.npy was already standardized before saving.
     config.premade_encoded_already_scaled = False
     # whether to save autoencoder outputs)
-    config.save_autoencoder_results = False
+    config.save_autoencoder_results = True
+    config.o2vae_latent_dim = 64
+    config.o2vae_epochs = 41
+    config.o2vae_learning_rate = 1e-3
+    config.o2vae_beta = 0.01
+    config.o2vae_align_loss = True
+    config.o2vae_align_fourier = True
+    config.o2vae_do_flip = True
+    config.o2vae_circular_mask = True
+    config.o2vae_pad_to_odd = False
+    config.o2vae_batch_size = 4
+    config.o2vae_encoder_channels = [2, 3, 4, 4, 6, 8]
+    config.o2vae_decoder_channels = [64, 32, 16, 8]
+    config.o2vae_amp = False
+    config.o2vae_grad_accum_steps = 1
+    config.o2vae_gradient_checkpointing = False
+    config.o2vae_repo_path = "/raid/scratch/mevans/o2vae"
 
     # SOM toggle: "som" (fixed grid) or "gsom" (growing) or "soumap" (UMAP+SOM)
     config.som_type = "som"  # "som" | "gsom" | "soumap"
@@ -740,11 +770,20 @@ def main():
 
         # train AE or load premade AE outputs
         if getattr(config, "use_premade_autoencoder_results", False):
-            ae_dir = getattr(config, "premade_autoencoder_results_dir", "")
-            enc_path = os.path.join(ae_dir, "encoded_data.npy")
+            if config.autoencoder_method == "o2vae":
+                ae_dir = getattr(config, "premade_o2vae_autoencoder_results_dir", "")
+                encoded_name = "encoded_data_o2vae.npy"
+                ae_re_name = "losses_o2vae.npy"
+                model_name = "model_state_o2vae.pth"
+            else:
+                ae_dir = getattr(config, "premade_autoencoder_results_dir", "")
+                encoded_name = "encoded_data.npy"
+                ae_re_name = "ae_re.npy"
+                model_name = "ae_model_state.pth"
+            enc_path = os.path.join(ae_dir, encoded_name)
             if not os.path.isfile(enc_path):
                 raise FileNotFoundError(
-                    f"Premade encoded data not found: {enc_path}. "
+                    f"Premade {config.autoencoder_method} encoded data not found at exact path: {enc_path}. "
                     "Set use_premade_autoencoder_results=False to train a new autoencoder."
                 )
 
@@ -756,12 +795,12 @@ def main():
                 )
 
             ae_re = None
-            ae_re_path = os.path.join(ae_dir, "ae_re.npy")
+            ae_re_path = os.path.join(ae_dir, ae_re_name)
             if os.path.isfile(ae_re_path):
                 ae_re = np.load(ae_re_path, allow_pickle=False)
 
             model = None
-            model_path = os.path.join(ae_dir, "ae_model_state.pth")
+            model_path = os.path.join(ae_dir, model_name)
             if os.path.isfile(model_path):
                 state_dict = torch.load(model_path, map_location="cpu")
 
@@ -782,22 +821,29 @@ def main():
                 if has_bottleneck:
                     ckpt_bottleneck_dim = int(state_dict["fc_enc.weight"].shape[0])
 
-                model = autoencoder.ConvAE(
+                if config.autoencoder_method != "existing":
+                    print("O2-VAE premade model checkpoint is not loaded for reconstruction plots.")
+                    model = None
+                else:
+                    from autoencoder import ConvAE
+                    model = ConvAE(
                     H,
                     W,
                     bottleneck_dim=ckpt_bottleneck_dim,
                     in_channels=in_channels,
-                )
-                try:
-                    model.load_state_dict(state_dict, strict=True)
-                    model.eval()
-                except RuntimeError as e:
-                    print(f"Warning: failed to load AE checkpoint for recon plots ({e}).")
-                    model = None
+                    )
+                    try:
+                        model.load_state_dict(state_dict, strict=True)
+                        model.eval()
+                    except RuntimeError as e:
+                        print(f"Warning: failed to load AE checkpoint for recon plots ({e}).")
+                        model = None
 
             print(f"Loaded premade autoencoder outputs from {ae_dir}")
         else:
-            encoded_data, model, ae_re = autoencoder.train_autoencoder(dataset, config)
+            encoded_data, model, ae_re = autoencoder_dispatch.train_autoencoder(
+                config.autoencoder_method, dataset, config
+            )
 
         from plotting import plot_autoencoder_qe
         if ae_re is not None:
@@ -814,24 +860,35 @@ def main():
 
         # If requested, save AE outputs now that encoded_data is available
         if getattr(config, "save_autoencoder_results", False) and not getattr(config, "use_premade_autoencoder_results", False):
-            ae_dir = "/raid/scratch/mevans/autoencoder_results"
+            if config.autoencoder_method == "o2vae":
+                ae_dir = getattr(config, "o2vae_autoencoder_results_dir", "")
+                encoded_name = "encoded_data_o2vae.npy"
+                loss_name = "losses_o2vae.npy"
+                model_name = "model_state_o2vae.pth"
+                info_name = "settings_o2vae.txt"
+            else:
+                ae_dir = "/raid/scratch/mevans/autoencoder_results"
+                encoded_name = "encoded_data.npy"
+                loss_name = "ae_re.npy"
+                model_name = "ae_model_state.pth"
+                info_name = "ae_settings.txt"
             os.makedirs(ae_dir, exist_ok=True)
             try:
-                np.save(os.path.join(ae_dir, "encoded_data.npy"), encoded_data)
+                np.save(os.path.join(ae_dir, encoded_name), encoded_data)
             except Exception:
-                print("Warning: failed to save encoded_data.npy")
+                print(f"Warning: failed to save {encoded_name}")
             try:
-                np.save(os.path.join(ae_dir, "ae_re.npy"), np.asarray(ae_re))
+                np.save(os.path.join(ae_dir, loss_name), np.asarray(ae_re))
             except Exception:
-                print("Warning: failed to save ae_re.npy")
+                print(f"Warning: failed to save {loss_name}")
             try:
                 if model is not None:
-                    torch.save(model.state_dict(), os.path.join(ae_dir, "ae_model_state.pth"))
+                    torch.save(model.state_dict(), os.path.join(ae_dir, model_name))
             except Exception:
                 print("Warning: failed to save AE model state")
 
             # Write a simple text info file with autoencoder settings
-            info_path = os.path.join(ae_dir, "ae_settings.txt")
+            info_path = os.path.join(ae_dir, info_name)
             try:
                 with open(info_path, "w") as info_f:
                     info_f.write(f"saved_time: {datetime.datetime.now().isoformat()}\n")
@@ -841,12 +898,26 @@ def main():
                     info_f.write(f"ae_learning_rate: {config.ae_learning_rate}\n")
                     info_f.write(f"ae_bottleneck_dim: {config.ae_bottleneck_dim}\n")
                     info_f.write(f"ae_use_bottleneck: {config.ae_use_bottleneck}\n")
-                    info_f.write(f"premade_source: {getattr(config, 'premade_autoencoder_results_dir', '')}\n")
-                print(f"Saved autoencoder results to {ae_dir}")
+                    if config.autoencoder_method == "o2vae":
+                        info_f.write(
+                            f"premade_source: {getattr(config, 'premade_o2vae_autoencoder_results_dir', '')}\n"
+                        )
+                        info_f.write(f"autoencoder_method: {config.autoencoder_method}\n")
+                        info_f.write(f"upstream_commit: 4c70d589954a86d114aba2d27ff7111573ac669c4\n")
+                        info_f.write(f"image_size: {imgs.shape[-1]}\n")
+                        info_f.write(f"encoder_channels: {config.o2vae_encoder_channels}\n")
+                        info_f.write(f"decoder_channels: {config.o2vae_decoder_channels}\n")
+                        info_f.write(f"o2vae_batch_size: {config.o2vae_batch_size}\n")
+                        info_f.write(f"circular_mask: {config.o2vae_circular_mask}\n")
+                        info_f.write("normalization: global min-max to [0, 1] for BCE\n")
+                        info_f.write(f"pad_to_odd: {config.o2vae_pad_to_odd}\n")
+                    else:
+                        info_f.write(f"premade_source: {getattr(config, 'premade_autoencoder_results_dir', '')}\n")
             except Exception:
                 print("Warning: failed to write AE settings info file")
+            print(f"Saved autoencoder results to {ae_dir}")
         # optional reconstruction plots
-        if config.plot_autoencoder_recons and model is not None:
+        if config.plot_autoencoder_recons and model is not None and config.autoencoder_method == "existing":
             from plotting import plot_autoencoder_reconstructions
             device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
             model = model.to(device)
